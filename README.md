@@ -1,4 +1,4 @@
-# 一个基于Metasploit-framework内核级木马
+# 一个基于Metasploit-framework内核级后门木马
 
 Windows 服务/应用程序双模式，结合内核驱动实现 Ring 0 级进程控制。
 
