@@ -1,0 +1,8 @@
+﻿namespace StarlightGUI
+{
+    [default_interface]
+    runtimeclass Process_KCTPage : Microsoft.UI.Xaml.Controls.Page
+    {
+        Process_KCTPage();
+    }
+}

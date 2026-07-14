@@ -1,0 +1,8 @@
+﻿namespace StarlightGUI
+{
+    [default_interface]
+    runtimeclass MonitorPage : Microsoft.UI.Xaml.Controls.Page
+    {
+        MonitorPage();
+    }
+}

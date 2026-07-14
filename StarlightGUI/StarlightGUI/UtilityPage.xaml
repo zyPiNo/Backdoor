@@ -1,0 +1,314 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="StarlightGUI.UtilityPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:essential="using:WinUI3Package"
+    xmlns:local="using:StarlightGUI"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    NavigationCacheMode="Disabled"
+    mc:Ignorable="d">
+
+    <Grid>
+        <ScrollViewer Padding="20">
+            <essential:RevealFocusPanel x:Name="RevealFocusPanel">
+                <StackPanel>
+                    <TextBlock
+                        x:Name="UtilitySysBehaviorUid"
+                        Padding="10"
+                        HorizontalAlignment="Left"
+                        FontSize="14"
+                        FontWeight="SemiBold"
+                        Text="系统行为控制" />
+
+                    <essential:SettingsCard
+                        x:Name="CreateProcessCard"
+                        Margin="0,0,0,10"
+                        essential:RevealFocusPanel.AttachToPanel="{x:Bind RevealFocusPanel}"
+                        Description="禁止或允许全局创建进程"
+                        Header="创建进程"
+                        IsActionIconVisible="False"
+                        IsClickEnabled="True">
+                        <essential:SettingsCard.HeaderIcon>
+                            <FontIcon
+                                FontFamily="Segoe Fluent Icons"
+                                FontSize="16"
+                                Glyph="&#xe9d9;" />
+                        </essential:SettingsCard.HeaderIcon>
+                        <StackPanel Orientation="Horizontal">
+                            <Button
+                                Margin="0,0,16,0"
+                                Click="Button_Click"
+                                Content="启用"
+                                Tag="ENABLE_CREATE_PROCESS" />
+                            <Button
+                                Click="Button_Click"
+                                Content="禁用"
+                                Tag="DISABLE_CREATE_PROCESS" />
+                        </StackPanel>
+                    </essential:SettingsCard>
+
+                    <essential:SettingsCard
+                        x:Name="CreateFileCard"
+                        Margin="0,0,0,10"
+                        essential:RevealFocusPanel.AttachToPanel="{x:Bind RevealFocusPanel}"
+                        Description="禁止或允许全局创建文件"
+                        Header="创建文件"
+                        IsActionIconVisible="False"
+                        IsClickEnabled="True">
+                        <essential:SettingsCard.HeaderIcon>
+                            <FontIcon
+                                FontFamily="Segoe Fluent Icons"
+                                FontSize="16"
+                                Glyph="&#xed25;" />
+                        </essential:SettingsCard.HeaderIcon>
+                        <StackPanel Orientation="Horizontal">
+                            <Button
+                                Margin="0,0,16,0"
+                                Click="Button_Click"
+                                Content="启用"
+                                Tag="ENABLE_CREATE_FILE" />
+                            <Button
+                                Click="Button_Click"
+                                Content="禁用"
+                                Tag="DISABLE_CREATE_FILE" />
+                        </StackPanel>
+                    </essential:SettingsCard>
+
+                    <essential:SettingsCard
+                        x:Name="ModifyRegCard"
+                        Margin="0,0,0,10"
+                        essential:RevealFocusPanel.AttachToPanel="{x:Bind RevealFocusPanel}"
+                        Description="禁止或允许修改注册表"
+                        Header="修改注册表"
+                        IsActionIconVisible="False"
+                        IsClickEnabled="True">
+                        <essential:SettingsCard.HeaderIcon>
+                            <FontIcon
+                                FontFamily="Segoe Fluent Icons"
+                                FontSize="16"
+                                Glyph="&#xe9d5;" />
+                        </essential:SettingsCard.HeaderIcon>
+                        <StackPanel Orientation="Horizontal">
+                            <Button
+                                Margin="0,0,16,0"
+                                Click="Button_Click"
+                                Content="启用"
+                                Tag="ENABLE_MODIFY_REG" />
+                            <Button
+                                Click="Button_Click"
+                                Content="禁用"
+                                Tag="DISABLE_MODIFY_REG" />
+                        </StackPanel>
+                    </essential:SettingsCard>
+
+                    <essential:SettingsCard
+                        x:Name="DSECard"
+                        Margin="0,0,0,10"
+                        essential:RevealFocusPanel.AttachToPanel="{x:Bind RevealFocusPanel}"
+                        Description="开启或关闭驱动签名强制 (Driver Signature Enforcement)"
+                        Header="驱动签名强制"
+                        IsActionIconVisible="False"
+                        IsClickEnabled="True">
+                        <essential:SettingsCard.HeaderIcon>
+                            <FontIcon
+                                FontFamily="Segoe Fluent Icons"
+                                FontSize="16"
+                                Glyph="&#xef3f;" />
+                        </essential:SettingsCard.HeaderIcon>
+                        <StackPanel Orientation="Horizontal">
+                            <Button
+                                Margin="0,0,16,0"
+                                Click="Button_Click"
+                                Content="启用"
+                                Tag="ENABLE_DSE" />
+                            <Button
+                                Click="Button_Click"
+                                Content="禁用"
+                                Tag="DISABLE_DSE" />
+                        </StackPanel>
+                    </essential:SettingsCard>
+
+                    <essential:SettingsCard
+                        x:Name="LKDCard"
+                        Margin="0,0,0,10"
+                        essential:RevealFocusPanel.AttachToPanel="{x:Bind RevealFocusPanel}"
+                        Description="开启本地内核调试"
+                        Header="本地内核调试"
+                        IsActionIconVisible="False"
+                        IsClickEnabled="True">
+                        <essential:SettingsCard.HeaderIcon>
+                            <FontIcon
+                                FontFamily="Segoe Fluent Icons"
+                                FontSize="16"
+                                Glyph="&#xebe8;" />
+                        </essential:SettingsCard.HeaderIcon>
+                        <StackPanel Orientation="Horizontal">
+                            <Button
+                                x:Name="UtilityLKDEnableUid"
+                                Click="Button_Click"
+                                Content="启用"
+                                Tag="ENABLE_LKD" />
+                        </StackPanel>
+                    </essential:SettingsCard>
+
+                    <essential:SettingsCard
+                        x:Name="PGCard"
+                        Margin="0,0,0,10"
+                        essential:RevealFocusPanel.AttachToPanel="{x:Bind RevealFocusPanel}"
+                        Description="禁用内核 PatchGuard 保护"
+                        Header="禁用内核保护"
+                        IsActionIconVisible="False"
+                        IsClickEnabled="True">
+                        <essential:SettingsCard.HeaderIcon>
+                            <FontIcon
+                                FontFamily="Segoe Fluent Icons"
+                                FontSize="16"
+                                Glyph="&#xf540;" />
+                        </essential:SettingsCard.HeaderIcon>
+                        <StackPanel Orientation="Horizontal">
+                            <Button
+                                x:Name="UtilityPGDisableUid"
+                                Click="Button_Click"
+                                Content="禁用"
+                                Tag="PATCHGUARD" />
+                        </StackPanel>
+                    </essential:SettingsCard>
+
+                    <essential:SettingsCard
+                        x:Name="BSODCard"
+                        Margin="0,0,0,10"
+                        essential:RevealFocusPanel.AttachToPanel="{x:Bind RevealFocusPanel}"
+                        Description="使系统发生崩溃 (Blue Screen Of Death)"
+                        Header="蓝屏"
+                        IsActionIconVisible="False"
+                        IsClickEnabled="True">
+                        <essential:SettingsCard.HeaderIcon>
+                            <FontIcon
+                                FontFamily="Segoe Fluent Icons"
+                                FontSize="16"
+                                Glyph="&#xe783;" />
+                        </essential:SettingsCard.HeaderIcon>
+                        <StackPanel Orientation="Horizontal">
+                            <Button
+                                x:Name="UtilityBSODCrashUid"
+                                Click="Button_Click"
+                                Content="崩溃"
+                                Tag="BSOD" />
+                        </StackPanel>
+                    </essential:SettingsCard>
+
+                    <TextBlock
+                        x:Name="UtilityHypervisorUid"
+                        Padding="10"
+                        HorizontalAlignment="Left"
+                        FontSize="14"
+                        FontWeight="SemiBold"
+                        Text="Hypervisor" />
+
+                    <essential:SettingsCard
+                        x:Name="HypervisorCard"
+                        Margin="0,0,0,10"
+                        essential:RevealFocusPanel.AttachToPanel="{x:Bind RevealFocusPanel}"
+                        Description="开启虚拟化模式，将强化部分功能（仅限支持 Intel VT 的硬件)"
+                        Header="Hypervisor 模式"
+                        IsActionIconVisible="False"
+                        IsClickEnabled="True">
+                        <essential:SettingsCard.HeaderIcon>
+                            <FontIcon
+                                FontFamily="Segoe Fluent Icons"
+                                FontSize="16"
+                                Glyph="&#xebd2;" />
+                        </essential:SettingsCard.HeaderIcon>
+                        <StackPanel Orientation="Horizontal">
+                            <Button
+                                x:Name="UtilityHypervisorEnableUid"
+                                Margin="0,0,16,0"
+                                Click="Button_Click"
+                                Content="启用"
+                                Tag="ENABLE_HYPERVISOR" />
+                            <Button
+                                x:Name="UtilityHypervisorDisableUid"
+                                Click="Button_Click"
+                                Content="关闭"
+                                Tag="DISABLE_HYPERVISOR" />
+                        </StackPanel>
+                    </essential:SettingsCard>
+
+                    <essential:SettingsCard
+                        x:Name="DSEHypervisorCard"
+                        Margin="0,0,0,10"
+                        essential:RevealFocusPanel.AttachToPanel="{x:Bind RevealFocusPanel}"
+                        Description="使用虚拟化方式开启或关闭驱动签名强制"
+                        Header="驱动签名强制 (Hypervisor)"
+                        IsActionIconVisible="False"
+                        IsClickEnabled="True">
+                        <essential:SettingsCard.HeaderIcon>
+                            <FontIcon
+                                FontFamily="Segoe Fluent Icons"
+                                FontSize="16"
+                                Glyph="&#xef3f;" />
+                        </essential:SettingsCard.HeaderIcon>
+                        <StackPanel Orientation="Horizontal">
+                            <Button
+                                Margin="0,0,16,0"
+                                Click="Button_Click"
+                                Content="启用"
+                                Tag="ENABLE_DSE_HYPERVISOR" />
+                            <Button
+                                Click="Button_Click"
+                                Content="禁用"
+                                Tag="DISABLE_DSE_HYPERVISOR" />
+                        </StackPanel>
+                    </essential:SettingsCard>
+
+                    <essential:SettingsCard
+                        x:Name="PGHypervisorCard"
+                        Margin="0,0,0,10"
+                        essential:RevealFocusPanel.AttachToPanel="{x:Bind RevealFocusPanel}"
+                        Description="使用虚拟化方式禁用内核 PatchGuard 保护"
+                        Header="禁用内核保护 (Hypervisor)"
+                        IsActionIconVisible="False"
+                        IsClickEnabled="True">
+                        <essential:SettingsCard.HeaderIcon>
+                            <FontIcon
+                                FontFamily="Segoe Fluent Icons"
+                                FontSize="16"
+                                Glyph="&#xf540;" />
+                        </essential:SettingsCard.HeaderIcon>
+                        <StackPanel Orientation="Horizontal">
+                            <Button
+                                x:Name="UtilityPGHypervisorDisableUid"
+                                Click="Button_Click"
+                                Content="禁用"
+                                Tag="PATCHGUARD_HYPERVISOR" />
+                        </StackPanel>
+                    </essential:SettingsCard>
+
+                    <essential:SettingsCard
+                        x:Name="LoadDrvHypervisorCard"
+                        Margin="0,0,0,10"
+                        essential:RevealFocusPanel.AttachToPanel="{x:Bind RevealFocusPanel}"
+                        Description="使用虚拟化方式临时关闭驱动签名强制后加载驱动"
+                        Header="加载驱动 (Hypervisor)"
+                        IsActionIconVisible="False"
+                        IsClickEnabled="True">
+                        <essential:SettingsCard.HeaderIcon>
+                            <FontIcon
+                                FontFamily="Segoe Fluent Icons"
+                                FontSize="16"
+                                Glyph="&#xe8ce;" />
+                        </essential:SettingsCard.HeaderIcon>
+                        <StackPanel Orientation="Horizontal">
+                            <Button
+                                x:Name="UtilityLoadDriverHypervisorUid"
+                                Click="LoadDriverHypervisorButton_Click"
+                                Content="加载驱动" />
+                        </StackPanel>
+                    </essential:SettingsCard>
+                </StackPanel>
+            </essential:RevealFocusPanel>
+        </ScrollViewer>
+    </Grid>
+</Page>

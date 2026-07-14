@@ -1,0 +1,8 @@
+﻿namespace StarlightGUI
+{
+    [default_interface]
+    runtimeclass KernelModulePage : Microsoft.UI.Xaml.Controls.Page
+    {
+        KernelModulePage();
+    }
+}

@@ -1,0 +1,20 @@
+﻿namespace StarlightGUI
+{
+	[bindable]
+	[default_interface]
+	runtimeclass WindowInfo
+	{
+		WindowInfo();
+
+		String Name{ get; set; };
+		String Description{ get; set; };
+		String Process{ get; set; };
+		String ClassName{ get; set; };
+		UInt64 Hwnd{ get; set; };
+		Int32 FromPID{ get; set; };
+		Int32 WindowStyle{ get; set; };
+		Int32 WindowStyleEx{ get; set; };
+		Int32 Band{ get; set; };
+		Microsoft.UI.Xaml.Media.ImageSource Icon{ get; set; };
+	}
+}

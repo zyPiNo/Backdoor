@@ -1,0 +1,41 @@
+﻿namespace StarlightGUI
+{
+	[bindable]
+	[default_interface]
+	runtimeclass GeneralEntry
+	{
+		GeneralEntry();
+
+		String String1{ get; set; };
+		String String2{ get; set; };
+		String String3{ get; set; };
+		String String4{ get; set; };
+		String String5{ get; set; };
+		String String6{ get; set; };
+		Boolean Bool1{ get; set; };
+		Boolean Bool2{ get; set; };
+		Boolean Bool3{ get; set; };
+		Boolean Bool4{ get; set; };
+		Boolean Bool5{ get; set; };
+		Int32 Long1{ get; set; };
+		Int32 Long2{ get; set; };
+		Int32 Long3{ get; set; };
+		Int32 Long4{ get; set; };
+		Int32 Long5{ get; set; };
+		UInt32 ULong1{ get; set; };
+		UInt32 ULong2{ get; set; };
+		UInt32 ULong3{ get; set; };
+		UInt32 ULong4{ get; set; };
+		UInt32 ULong5{ get; set; };
+		Int64 LongLong1{ get; set; };
+		Int64 LongLong2{ get; set; };
+		Int64 LongLong3{ get; set; };
+		Int64 LongLong4{ get; set; };
+		Int64 LongLong5{ get; set; };
+		UInt64 ULongLong1{ get; set; };
+		UInt64 ULongLong2{ get; set; };
+		UInt64 ULongLong3{ get; set; };
+		UInt64 ULongLong4{ get; set; };
+		UInt64 ULongLong5{ get; set; };
+	}
+}

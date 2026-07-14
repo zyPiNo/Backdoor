@@ -1,0 +1,8 @@
+﻿namespace StarlightGUI
+{
+    [default_interface]
+    runtimeclass DisasmPage : Microsoft.UI.Xaml.Controls.Page
+    {
+        DisasmPage();
+    }
+}

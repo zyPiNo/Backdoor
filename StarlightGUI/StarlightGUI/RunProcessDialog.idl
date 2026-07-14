@@ -1,0 +1,11 @@
+﻿namespace StarlightGUI
+{
+    [default_interface]
+    runtimeclass RunProcessDialog : Microsoft.UI.Xaml.Controls.ContentDialog
+    {
+        RunProcessDialog();
+        String ProcessPath{ get; };
+        Int32 Permission{ get; };
+        Boolean FullPrivileges{ get; };
+    }
+}

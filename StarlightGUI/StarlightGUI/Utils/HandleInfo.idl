@@ -1,0 +1,15 @@
+﻿namespace StarlightGUI
+{
+	[bindable]
+	[default_interface]
+	runtimeclass HandleInfo
+	{
+		HandleInfo();
+
+		String Type{ get; set; };
+		String Handle{ get; set; };
+		String Object{ get; set; };
+		String Access{ get; set; };
+		String Attributes{ get; set; };
+	}
+}

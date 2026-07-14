@@ -1,0 +1,9 @@
+﻿namespace StarlightGUI
+{
+    [default_interface]
+    runtimeclass InjectDLLDialog : Microsoft.UI.Xaml.Controls.ContentDialog
+    {
+        InjectDLLDialog();
+        String DLLPath{ get; };
+    }
+}

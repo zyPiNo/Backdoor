@@ -1,0 +1,12 @@
+﻿namespace StarlightGUI
+{
+	[bindable]
+	[default_interface]
+	runtimeclass KCTInfo
+	{
+		KCTInfo();
+
+		String Name{ get; set; };
+		String Address{ get; set; };
+	}
+}

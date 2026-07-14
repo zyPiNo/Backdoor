@@ -1,0 +1,374 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="StarlightGUI.HelpPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:essential="using:WinUI3Package"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    NavigationCacheMode="Disabled"
+    mc:Ignorable="d">
+
+    <Grid>
+        <ScrollViewer Padding="20">
+            <essential:RevealFocusPanel x:Name="RevealFocusPanel">
+                <StackPanel>
+                    <!--  主面板  -->
+                    <Button
+                        Padding="8"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Stretch"
+                        essential:RevealFocusPanel.AttachToPanel="{x:Bind RevealFocusPanel}">
+                        <StackPanel HorizontalAlignment="Center">
+                            <Image
+                                Width="200"
+                                Height="200"
+                                HorizontalAlignment="Center"
+                                Source="/Assets/StarlightNew.png" />
+                            <TextBlock
+                                HorizontalAlignment="Center"
+                                FontSize="32"
+                                FontWeight="SemiBold"
+                                Text="Starlight GUI" />
+                            <TextBlock
+                                Padding="0,5,0,0"
+                                HorizontalAlignment="Center"
+                                FontSize="16"
+                                Foreground="{ThemeResource AppSecondaryTextBrush}"
+                                Text="Copyright © 2026 Starlight. All rights reserved." />
+                        </StackPanel>
+                    </Button>
+                    <TextBlock
+                        x:Name="HelpAboutUid"
+                        Padding="10"
+                        HorizontalAlignment="Left"
+                        FontSize="14"
+                        FontWeight="SemiBold"
+                        Text="关于" />
+                    <!--  Stars  -->
+                    <Button
+                        Padding="0"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Stretch"
+                        essential:RevealFocusPanel.AttachToPanel="{x:Bind RevealFocusPanel}">
+                        <Grid>
+                            <StackPanel Margin="8,0,0,0" Orientation="Horizontal">
+                                <Ellipse
+                                    Width="36"
+                                    Height="36"
+                                    Margin="12,0,0,0">
+                                    <Ellipse.Fill>
+                                        <ImageBrush ImageSource="/Assets/stars.png" Stretch="UniformToFill" />
+                                    </Ellipse.Fill>
+                                </Ellipse>
+                                <StackPanel Margin="16">
+                                    <TextBlock
+                                        FontSize="20"
+                                        FontWeight="SemiBold"
+                                        Text="Stars" />
+                                    <TextBlock
+                                        x:Name="HelpStarsDescUid"
+                                        FontSize="14"
+                                        Foreground="{ThemeResource AppSecondaryTextBrush}"
+                                        Text="Starlight GUI 的开发者，一个热爱编程的男孩子~" />
+                                </StackPanel>
+                            </StackPanel>
+                            <Button
+                                x:Name="HelpBilibiliButtonUid"
+                                Margin="0,0,16,0"
+                                HorizontalAlignment="Right"
+                                Click="BilibiliButton_Click"
+                                Content="查看B站" />
+                        </Grid>
+                    </Button>
+                    <!--  StarlightGUI Github  -->
+                    <Button
+                        Margin="0,10,0,0"
+                        Padding="0"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Stretch"
+                        essential:RevealFocusPanel.AttachToPanel="{x:Bind RevealFocusPanel}">
+                        <Grid>
+                            <StackPanel Margin="8,0,0,0" Orientation="Horizontal">
+                                <Grid Margin="12,0,0,0">
+                                    <Ellipse
+                                        Width="36"
+                                        Height="36"
+                                        Margin="0,2,0,0"
+                                        HorizontalAlignment="Left"
+                                        Fill="Black" />
+                                    <Image
+                                        Width="36"
+                                        Height="36"
+                                        HorizontalAlignment="Left"
+                                        Source="/Assets/github-mark.png" />
+                                </Grid>
+                                <StackPanel Margin="16">
+                                    <TextBlock
+                                        FontSize="20"
+                                        FontWeight="SemiBold"
+                                        Text="Github" />
+                                    <TextBlock
+                                        x:Name="HelpGithubDescUid"
+                                        FontSize="14"
+                                        Foreground="{ThemeResource AppSecondaryTextBrush}"
+                                        Text="官方源代码仓库: https://github.com/OpenStarlight/StarlightGUI" />
+                                </StackPanel>
+                            </StackPanel>
+                            <StackPanel HorizontalAlignment="Right" Orientation="Horizontal">
+                                <Button
+                                    x:Name="HelpGithubUserButtonUid"
+                                    Margin="0,0,16,0"
+                                    Click="GithubUserButton_Click"
+                                    Content="查看用户" />
+                                <Button
+                                    x:Name="HelpGithubRepoButtonUid"
+                                    Margin="0,0,16,0"
+                                    HorizontalAlignment="Right"
+                                    Click="GithubButton_Click"
+                                    Content="查看仓库" />
+                            </StackPanel>
+                        </Grid>
+                    </Button>
+                    <TextBlock
+                        x:Name="HelpAcknowledgementUid"
+                        Margin="0,10,0,0"
+                        Padding="10"
+                        HorizontalAlignment="Left"
+                        FontSize="14"
+                        FontWeight="SemiBold"
+                        Text="特别鸣谢" />
+                    <!--  WinUI 3  -->
+                    <Button
+                        Margin="0,10,0,0"
+                        Padding="0"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Stretch"
+                        essential:RevealFocusPanel.AttachToPanel="{x:Bind RevealFocusPanel}">
+                        <Grid>
+                            <StackPanel Margin="8,0,0,0" Orientation="Horizontal">
+                                <Ellipse
+                                    Width="36"
+                                    Height="36"
+                                    Margin="12,0,0,0">
+                                    <Ellipse.Fill>
+                                        <ImageBrush ImageSource="/Assets/winui.png" Stretch="UniformToFill" />
+                                    </Ellipse.Fill>
+                                </Ellipse>
+                                <StackPanel Margin="16">
+                                    <TextBlock
+                                        FontSize="20"
+                                        FontWeight="SemiBold"
+                                        Text="WinUI 3" />
+                                    <TextBlock
+                                        x:Name="HelpWinUIDescUid"
+                                        FontSize="14"
+                                        Foreground="{ThemeResource AppSecondaryTextBrush}"
+                                        Text="WinUI 是一个用户界面层，包含现代控件和样式，用于构建 Windows 应用。" />
+                                </StackPanel>
+                            </StackPanel>
+                            <Button
+                                x:Name="HelpWinUIButtonUid"
+                                Margin="0,0,16,0"
+                                HorizontalAlignment="Right"
+                                Click="WinUIButton_Click"
+                                Content="查看主页" />
+                        </Grid>
+                    </Button>
+                    <!--  WinUI Essentials  -->
+                    <Button
+                        Margin="0,10,0,0"
+                        Padding="0"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Stretch"
+                        essential:RevealFocusPanel.AttachToPanel="{x:Bind RevealFocusPanel}">
+                        <Grid>
+                            <StackPanel Margin="8,0,0,0" Orientation="Horizontal">
+                                <Ellipse
+                                    Width="36"
+                                    Height="36"
+                                    Margin="12,0,0,0">
+                                    <Ellipse.Fill>
+                                        <ImageBrush ImageSource="/Assets/HO-COOH.png" Stretch="UniformToFill" />
+                                    </Ellipse.Fill>
+                                </Ellipse>
+                                <StackPanel Margin="16">
+                                    <TextBlock
+                                        FontSize="20"
+                                        FontWeight="SemiBold"
+                                        Text="WinUI Essentials" />
+                                    <TextBlock
+                                        x:Name="HelpWinUIEssentialsDescUid"
+                                        FontSize="14"
+                                        Foreground="{ThemeResource AppSecondaryTextBrush}"
+                                        Text="一个专门用于简化 WinUI 3 开发的 C++ 仓库。" />
+                                </StackPanel>
+                            </StackPanel>
+                            <StackPanel HorizontalAlignment="Right" Orientation="Horizontal">
+                                <Button
+                                    Margin="0,0,16,0"
+                                    Click="GithubUser2Button_Click"
+                                    Content="查看用户" />
+                                <Button
+                                    Margin="0,0,16,0"
+                                    Click="Github2Button_Click"
+                                    Content="查看仓库" />
+                            </StackPanel>
+                        </Grid>
+                    </Button>
+                    <!--  Kali_MC  -->
+                    <Button
+                        Margin="0,10,0,0"
+                        Padding="0"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Stretch"
+                        essential:RevealFocusPanel.AttachToPanel="{x:Bind RevealFocusPanel}">
+                        <Grid>
+                            <StackPanel Margin="8,0,0,0" Orientation="Horizontal">
+                                <Ellipse
+                                    Width="36"
+                                    Height="36"
+                                    Margin="12,0,0,0"
+                                    HorizontalAlignment="Left"
+                                    Fill="Black" />
+                                <StackPanel Margin="16">
+                                    <TextBlock
+                                        FontSize="20"
+                                        FontWeight="SemiBold"
+                                        Text="PspExitThread" />
+                                    <TextBlock
+                                        x:Name="HelpKALIDescUid"
+                                        FontSize="14"
+                                        Foreground="{ThemeResource AppSecondaryTextBrush}"
+                                        Text="擅长内核开发，提供了 Sirius 代码指导。" />
+                                </StackPanel>
+                            </StackPanel>
+                            <Button
+                                Margin="0,0,16,0"
+                                HorizontalAlignment="Right"
+                                Click="GithubUser3Button_Click"
+                                Content="查看用户" />
+                        </Grid>
+                    </Button>
+                    <!--  MuLin  -->
+                    <Button
+                        Margin="0,10,0,0"
+                        Padding="0"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Stretch"
+                        essential:RevealFocusPanel.AttachToPanel="{x:Bind RevealFocusPanel}">
+                        <Grid>
+                            <StackPanel Margin="8,0,0,0" Orientation="Horizontal">
+                                <Ellipse
+                                    Width="36"
+                                    Height="36"
+                                    Margin="12,0,0,0">
+                                    <Ellipse.Fill>
+                                        <ImageBrush ImageSource="/Assets/MuLin.png" Stretch="UniformToFill" />
+                                    </Ellipse.Fill>
+                                </Ellipse>
+                                <StackPanel Margin="16">
+                                    <TextBlock
+                                        FontSize="20"
+                                        FontWeight="SemiBold"
+                                        Text="MuLin" />
+                                    <TextBlock
+                                        x:Name="HelpMuLinDescUid"
+                                        FontSize="14"
+                                        Foreground="{ThemeResource AppSecondaryTextBrush}"
+                                        Text="一个QA和半个PD？为本项目提了一些小Bug和一些小需求。" />
+                                </StackPanel>
+                            </StackPanel>
+                            <StackPanel HorizontalAlignment="Right" Orientation="Horizontal">
+                                <Button
+                                    Margin="0,0,16,0"
+                                    Click="GithubUser4Button_Click"
+                                    Content="查看用户" />
+                            </StackPanel>
+                        </Grid>
+                    </Button>
+                    <!--  Wormwaker  -->
+                    <Button
+                        Margin="0,10,0,0"
+                        Padding="0"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Stretch"
+                        essential:RevealFocusPanel.AttachToPanel="{x:Bind RevealFocusPanel}">
+                        <Grid>
+                            <StackPanel Margin="8,0,0,0" Orientation="Horizontal">
+                                <Ellipse
+                                    Width="36"
+                                    Height="36"
+                                    Margin="12,0,0,0">
+                                    <Ellipse.Fill>
+                                        <ImageBrush ImageSource="/Assets/wormwaker.jpg" Stretch="UniformToFill" />
+                                    </Ellipse.Fill>
+                                </Ellipse>
+                                <StackPanel Margin="16">
+                                    <TextBlock
+                                        FontSize="20"
+                                        FontWeight="SemiBold"
+                                        Text="Wormwaker" />
+                                    <TextBlock
+                                        x:Name="HelpWormwakerDescUid"
+                                        FontSize="14"
+                                        Foreground="{ThemeResource AppSecondaryTextBrush}"
+                                        Text="本项目的技术支持、宣传、思路指导，Windows 用户层大师级开发者。" />
+                                </StackPanel>
+                            </StackPanel>
+                            <StackPanel HorizontalAlignment="Right" Orientation="Horizontal">
+                                <Button
+                                    Margin="0,0,16,0"
+                                    Click="Bilibili2Button_Click"
+                                    Content="查看用户" />
+                            </StackPanel>
+                        </Grid>
+                    </Button>
+                    <Grid Padding="10">
+                        <TextBlock
+                            x:Name="HelpSponsorsUid"
+                            Margin="0,10,0,0"
+                            HorizontalAlignment="Left"
+                            FontSize="14"
+                            FontWeight="SemiBold"
+                            Text="赞助者" />
+                        <Button
+                            x:Name="HelpSponsorButtonUid"
+                            Margin="0,5,5,0"
+                            HorizontalAlignment="Right"
+                            Click="SponsorButton_Click"
+                            Content="赞助！" />
+                    </Grid>
+                    <Button
+                        Margin="0,0,0,0"
+                        Padding="10"
+                        HorizontalAlignment="Stretch"
+                        HorizontalContentAlignment="Stretch"
+                        essential:RevealFocusPanel.AttachToPanel="{x:Bind RevealFocusPanel}">
+                        <Grid>
+                            <StackPanel Margin="5,0,0,0">
+                                <TextBlock
+                                    x:Name="HelpSponsorIntroUid"
+                                    Padding="10,5,10,0"
+                                    FontSize="14"
+                                    Text="自 Starlight GUI 问世以来，所有为本软件开发提供过赞助的人员名单，排名不分先后。由衷感谢你们对作者和本软件开发的支持！" />
+                                <Border
+                                    Height="1"
+                                    Margin="0,10,0,5"
+                                    HorizontalAlignment="Stretch"
+                                    Background="{ThemeResource AppSeparatorBrush}" />
+                                <TextBlock
+                                    x:Name="SponsorListText"
+                                    Padding="10"
+                                    FontSize="14"
+                                    IsTextSelectionEnabled="True"
+                                    Text="加载中..."
+                                    TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Grid>
+                    </Button>
+                </StackPanel>
+            </essential:RevealFocusPanel>
+        </ScrollViewer>
+    </Grid>
+</Page>

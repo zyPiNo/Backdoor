@@ -1,0 +1,35 @@
+﻿namespace StarlightGUI
+{
+	[bindable]
+	[default_interface]
+	runtimeclass ObjectEntry
+	{
+		ObjectEntry();
+
+		String Name{ get; set; };
+		String Path{ get; set; };
+		String Type{ get; set; };
+		Boolean Permanent{ get; set; };
+
+		UInt32 References{ get; set; };
+		UInt32 Handles{ get; set; };
+
+		UInt32 PagedPool{ get; set; };
+		UInt32 NonPagedPool{ get; set; };
+
+		String CreationTime{ get; set; };
+		String Link{ get; set; };
+		String EventType{ get; set; };
+		Boolean EventSignaled{ get; set; };
+		UInt32 MutantHoldCount{ get; set; };
+		Boolean MutantAbandoned{ get; set; };
+		UInt32 SemaphoreCount{ get; set; };
+		UInt32 SemaphoreLimit{ get; set; };
+		UInt64 SectionBaseAddress{ get; set; };
+		UInt64 SectionMaximumSize{ get; set; };
+		UInt32 SectionAttributes{ get; set; };
+		UInt64 TimerRemainingTime{ get; set; };
+		Boolean TimerState{ get; set; };
+		Int32 IoCompletionDepth{ get; set; };
+	}
+}

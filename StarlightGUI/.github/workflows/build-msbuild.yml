@@ -1,0 +1,62 @@
+﻿name: build-msbuild
+
+on:
+  push:
+    branches: [ "master", "main" ]
+  pull_request:
+    branches: [ "master", "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2025-vs2026
+
+    env:
+      SOLUTION_FILE: StarlightGUI.sln
+      BUILD_CONFIGURATION: Release
+      BUILD_PLATFORM: x64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Restore NuGet packages
+        run: nuget restore "${{ env.SOLUTION_FILE }}"
+
+      - name: Build
+        run: msbuild "${{ env.SOLUTION_FILE }}" /m /p:Configuration=${{ env.BUILD_CONFIGURATION }} /p:Platform=${{ env.BUILD_PLATFORM }}
+
+      - name: Collect build output
+        shell: pwsh
+        run: |
+          $releaseDirCandidates = @(
+            "x64/Release",
+            "StarlightGUI/x64/Release"
+          )
+
+          $releaseDir = $releaseDirCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $releaseDir) {
+            throw "Release output directory not found. Tried: $($releaseDirCandidates -join ', ')"
+          }
+
+          New-Item -ItemType Directory -Path artifact -Force | Out-Null
+          Copy-Item "$releaseDir/*" artifact -Recurse -Force
+
+      - name: Pack zip
+        shell: pwsh
+        run: |
+          $zipName = "StarlightGUI-${{ env.BUILD_CONFIGURATION }}-${{ env.BUILD_PLATFORM }}-${{ github.run_number }}.zip"
+          Compress-Archive -Path artifact\* -DestinationPath $zipName -Force
+          "ZIP_NAME=$zipName" >> $env:GITHUB_ENV
+
+      - name: Upload artifact zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: starlightgui-${{ env.BUILD_CONFIGURATION }}-${{ env.BUILD_PLATFORM }}
+          path: ${{ env.ZIP_NAME }}

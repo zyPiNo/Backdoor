@@ -1,0 +1,168 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<Window
+    x:Class="StarlightGUI.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:animatedvisuals="using:Microsoft.UI.Xaml.Controls.AnimatedVisuals"
+    xmlns:controls="using:Microsoft.UI.Xaml.Controls"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:essential="using:WinUI3Package"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    Title="Starlight GUI"
+    mc:Ignorable="d">
+
+    <Grid x:Name="MainWindowGrid">
+        <Grid Background="{StaticResource WindowBackgroundBrush}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <Grid.Resources>
+                <essential:ModernStandardWindowContextMenu x:Name="Menu" Window="{x:Bind}" />
+            </Grid.Resources>
+
+            <essential:WindowCaptionButtonThemeWorkaround
+                x:Name="CaptionButtonThemeWorkaround"
+                Height="48"
+                Window="{x:Bind}" />
+
+            <TitleBar
+                x:Name="AppTitleBar"
+                Title="Starlight GUI"
+                IsPaneToggleButtonVisible="True"
+                PaneToggleRequested="AppTitleBar_PaneToggleRequested"
+                Subtitle="{StaticResource Version}">
+                <TitleBar.IconSource>
+                    <ImageIconSource ImageSource="/Assets/Starlight.png" />
+                </TitleBar.IconSource>
+                <TitleBar.RightHeader>
+                    <PersonPicture
+                        x:Name="MainAvatar"
+                        Width="24"
+                        Height="24"
+                        Initials="SL" />
+                </TitleBar.RightHeader>
+            </TitleBar>
+
+            <!--  侧边栏区域  -->
+            <NavigationView
+                x:Name="RootNavigation"
+                Grid.Row="1"
+                essential:NavigationViewHelper.AcrylicWorkaround="True"
+                IsBackButtonVisible="Collapsed"
+                IsPaneOpen="False"
+                IsPaneToggleButtonVisible="False"
+                IsSettingsVisible="False"
+                ItemInvoked="RootNavigation_ItemInvoked"
+                PaneDisplayMode="LeftCompact">
+
+                <!--  选项，从上到下  -->
+                <NavigationView.MenuItems>
+                    <NavigationViewItem
+                        x:Name="NavHomeUid"
+                        Content="主页"
+                        Icon="Home"
+                        Tag="Home" />
+                    <NavigationViewItem
+                        x:Name="NavTaskUid"
+                        Content="任务管理"
+                        Tag="Task">
+                        <NavigationViewItem.Icon>
+                            <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xf120;" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+                    <NavigationViewItem
+                        x:Name="NavKernelModuleUid"
+                        Content="模块管理"
+                        Tag="KernelModule">
+                        <NavigationViewItem.Icon>
+                            <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xe8ce;" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+                    <NavigationViewItem
+                        x:Name="NavFileUid"
+                        Content="文件管理"
+                        Tag="File">
+                        <NavigationViewItem.Icon>
+                            <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xec50;" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+                    <NavigationViewItem
+                        x:Name="NavWindowUid"
+                        Content="窗口管理"
+                        Tag="Window">
+                        <NavigationViewItem.Icon>
+                            <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xe737;" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+                    <NavigationViewItem
+                        x:Name="NavUtilityUid"
+                        Content="系统功能"
+                        Tag="Utility">
+                        <NavigationViewItem.Icon>
+                            <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xec7a;" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+                    <NavigationViewItem
+                        x:Name="NavMonitorUid"
+                        Content="监视器"
+                        Tag="Monitor">
+                        <NavigationViewItem.Icon>
+                            <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xea8f;" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+                    <NavigationViewItem
+                        x:Name="NavDisasmUid"
+                        Content="内存反汇编"
+                        Tag="Disasm">
+                        <NavigationViewItem.Icon>
+                            <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xe943;" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+                </NavigationView.MenuItems>
+
+                <!--  从上到下  -->
+                <!--  最下面是设置  -->
+                <NavigationView.FooterMenuItems>
+                    <NavigationViewItem
+                        x:Name="NavHelpUid"
+                        Content="关于"
+                        Icon="Help"
+                        Tag="Help" />
+                    <NavigationViewItem
+                        x:Name="NavSettingsUid"
+                        Content="设置"
+                        Tag="Settings">
+                        <NavigationViewItem.Icon>
+                            <AnimatedIcon x:Name="NavSettingsIcon">
+                                <AnimatedIcon.Source>
+                                    <animatedvisuals:AnimatedSettingsVisualSource />
+                                </AnimatedIcon.Source>
+                                <AnimatedIcon.FallbackIconSource>
+                                    <SymbolIconSource Symbol="Setting" />
+                                </AnimatedIcon.FallbackIconSource>
+                            </AnimatedIcon>
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+                </NavigationView.FooterMenuItems>
+
+                <!--  内容  -->
+                <Frame
+                    x:Name="MainFrame"
+                    Grid.Row="1"
+                    CacheSize="10">
+                    <ProgressRing
+                        x:Name="LoadingRing"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        IsActive="True" />
+                </Frame>
+            </NavigationView>
+        </Grid>
+        <StackPanel
+            x:Name="InfoBarPanel"
+            Margin="0,58,10,0"
+            HorizontalAlignment="Right" />
+    </Grid>
+</Window>

@@ -1,0 +1,91 @@
+﻿<?xml version="1.0" encoding="utf-8" ?>
+<Window
+    x:Class="StarlightGUI.InfoWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:Microsoft.UI.Xaml.Controls"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:essential="using:WinUI3Package"
+    xmlns:local="using:StarlightGUI"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    Title="Starlight GUI Process Info"
+    mc:Ignorable="d">
+
+    <Grid x:Name="InfoWindowGrid">
+        <Grid Background="{StaticResource WindowBackgroundBrush}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <Grid.Resources>
+                <essential:ModernStandardWindowContextMenu x:Name="Menu" Window="{x:Bind}" />
+            </Grid.Resources>
+
+            <essential:WindowCaptionButtonThemeWorkaround Height="48" Window="{x:Bind}" />
+
+            <TitleBar
+                x:Name="AppTitleBar"
+                Title="Process Name"
+                IsPaneToggleButtonVisible="True"
+                PaneToggleRequested="AppTitleBar_PaneToggleRequested"
+                Subtitle="(PID)">
+                <TitleBar.IconSource>
+                    <ImageIconSource ImageSource="/Assets/Starlight.png" />
+                </TitleBar.IconSource>
+            </TitleBar>
+
+            <NavigationView
+                x:Name="RootNavigation"
+                Grid.Row="1"
+                essential:NavigationViewHelper.AcrylicWorkaround="True"
+                IsBackButtonVisible="Collapsed"
+                IsPaneOpen="False"
+                IsPaneToggleButtonVisible="False"
+                IsSettingsVisible="False"
+                ItemInvoked="RootNavigation_ItemInvoked"
+                PaneDisplayMode="LeftCompact">
+
+                <!--  选项，从上到下  -->
+                <NavigationView.MenuItems>
+                    <NavigationViewItem
+                        x:Name="NavThreadUid"
+                        Content="线程"
+                        Icon="List"
+                        Tag="Thread" />
+                    <NavigationViewItem
+                        x:Name="NavHandleUid"
+                        Content="句柄"
+                        Icon="Tag"
+                        Tag="Handle" />
+                    <NavigationViewItem
+                        x:Name="NavModuleUid"
+                        Content="模块"
+                        Tag="Module">
+                        <NavigationViewItem.Icon>
+                            <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xeabb;" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+                    <NavigationViewItem
+                        x:Name="NavKCTUid"
+                        Content="内核回调表"
+                        Tag="KCT">
+                        <NavigationViewItem.Icon>
+                            <FontIcon FontFamily="Segoe Fluent Icons" Glyph="&#xeadf;" />
+                        </NavigationViewItem.Icon>
+                    </NavigationViewItem>
+                </NavigationView.MenuItems>
+
+                <!--  内容  -->
+                <Frame
+                    x:Name="MainFrame"
+                    Grid.Row="1"
+                    CacheSize="2" />
+            </NavigationView>
+        </Grid>
+        <StackPanel
+            x:Name="InfoBarPanel"
+            Margin="0,58,10,0"
+            HorizontalAlignment="Right" />
+    </Grid>
+</Window>

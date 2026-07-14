@@ -1,0 +1,10 @@
+﻿namespace StarlightGUI
+{
+    [default_interface]
+    runtimeclass CopyFileDialog : Microsoft.UI.Xaml.Controls.ContentDialog
+    {
+        CopyFileDialog();
+
+        String CopyPath{ get; };
+    }
+}

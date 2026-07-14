@@ -1,0 +1,28 @@
+# WorkBuddy internal data
+.workbuddy/
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.sln.docstates
+**/x64/
+**/Debug/
+**/Release/
+**/ARM64/
+
+# Build outputs
+**/Generated Files/
+*.obj
+*.pch
+*.pdb
+*.ilk
+*.log
+*.tlog
+
+# NuGet packages
+packages/
+
+# IDE
+*.VC.db
+*.VC.opendb
