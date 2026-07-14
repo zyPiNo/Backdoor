@@ -68,6 +68,40 @@
 /** @brief 静默运行标志：TRUE 时不显示控制台窗口、不输出日志 */
 static BOOL g_bSilent = FALSE;
 
+/** @brief 运行时释放的驱动文件路径（用于退出时清理） */
+static WCHAR g_DriverFile[MAX_PATH] = { 0 };
+
+/**
+ * @brief 清理运行时释放的驱动文件和服务
+ *
+ * 由 atexit() 注册，程序退出时自动调用（包括 Ctrl+C）。
+ * 即使非正常退出（异常崩溃），Windows 也会尝试调用 atexit 注册的函数。
+ */
+static void CleanupDriver(void) {
+    /* 停止驱动服务 */
+    SC_HANDLE hSCM = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
+    if (hSCM) {
+        SC_HANDLE hSvc = OpenServiceW(hSCM, L"SiriusDrv",
+                                      SERVICE_STOP | DELETE);
+        if (hSvc) {
+            SERVICE_STATUS ss;
+            ControlService(hSvc, SERVICE_CONTROL_STOP, &ss);
+            DeleteService(hSvc);
+            CloseServiceHandle(hSvc);
+        }
+        CloseServiceHandle(hSCM);
+    }
+
+    /* 删除释放的 .sys 文件 */
+    if (g_DriverFile[0]) {
+        SetFileAttributesW(g_DriverFile, FILE_ATTRIBUTE_NORMAL);
+        if (DeleteFileW(g_DriverFile)) {
+            printf("[Cleanup] 已删除: %ls\n", g_DriverFile);
+        }
+        g_DriverFile[0] = L'\0';
+    }
+}
+
 /**
  * @brief 进入静默模式（GUI 子系统默认状态）
  *
@@ -580,6 +614,8 @@ static BOOL ExtractEmbeddedDriver(WCHAR outPath[MAX_PATH]) {
     }
 
     printf("[Extract] 驱动已释放: %ls (%lu bytes)\n", outPath, bytesWritten);
+    /* 记录路径，退出时自动删除 */
+    wcscpy_s(g_DriverFile, MAX_PATH, outPath);
     return TRUE;
 }
 
@@ -1566,6 +1602,8 @@ int main(int argc, char *argv[]) {
     DWORD err = GetLastError();
     if (err == ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) {
         // ===== 应用程序模式：执行提权、复制、创建服务（仅在此处执行一次） =====
+        /* 注册退出清理：确保驱动文件和服务的残留被清除 */
+        atexit(CleanupDriver);
         SetConsoleOutputCP(65001);
         printf("========================================\n");
         printf("  main_dual_new — 应用程序模式\n");
