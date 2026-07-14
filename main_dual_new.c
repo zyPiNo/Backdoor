@@ -731,8 +731,8 @@ static BOOL KillProcessByDriver(ULONG pid) {
     SI_PROCESS_INFO req;
     BOOL ok;
 
-    /* ★ 终止 (内存→线程→普通) */
-    int args[] = { 2, 1, 0 };
+    /* ★ 终止: 温和→暴力渐进 (普通→线程→内存) */
+    int args[] = { 0, 1, 2 };
     for (int i = 0; i < 3; i++) {
         ZeroMemory(&req, sizeof(req));
         req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
