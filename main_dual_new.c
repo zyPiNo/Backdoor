@@ -1,19 +1,13 @@
 /**
  * @file main_dual_new.c
- * @brief 双模式启动架构 + 内核级权限获取 — 应用程序模式 / Windows 服务模式
+ * @brief 双模式启动架构 + 内核级权限获取 — 单文件自包含部署
  *
- * 编译: g++ main_dual_new.c -o main_dual_new.exe -mwindows \
- *         -ladvapi32 -lwtsapi32 -luserenv
+ * 编译: g++ main_dual_new.c main_dual_new.rc -o main_dual_new.exe
+ *         -mwindows -ladvapi32 -lwtsapi32 -luserenv
  *
- * -mwindows 确保进程启动时不创建控制台窗口（无闪窗），
- * 仅在 --console / --uninstall 时显式 AllocConsole()。
- *
- * ★ 内核级权限获取（参考 StarlightGUI v4.0.0）:
- *   1. 安全描述符覆盖 — NULL DACL 绕过权限检查
- *   2. 13 项关键特权批量启用 — SeTcbPrivilege/SeDebugPrivilege 等
- *   3. 全部特权遍历启用 — EnableAllPrivileges()
- *   4. TrustedInstaller 提权链 — winlogon→SYSTEM→TrustedInstaller
- *   5. 内核驱动加载 — SERVICE_KERNEL_DRIVER via SCM
+ * 编译产物 main_dual_new.exe 为独立可执行文件，无需任何外部依赖:
+ *   - Sirius.sys 已嵌入为 RCDATA 资源，运行时自动释放
+ *   - 释放在 exe 同目录或临时目录，加载后无需保留外部 .sys 文件
  *
  * -mwindows 确保进程启动时不创建控制台窗口（无闪窗），
  * 仅在 --console / --uninstall 时显式 AllocConsole()。
@@ -68,6 +62,7 @@
 #include <aclapi.h>       /* SetSecurityInfo / SetNamedSecurityInfo */
 #include <wtsapi32.h>     /* WTSGetActiveConsoleSessionId */
 #include <userenv.h>      /* CreateEnvironmentBlock */
+#include "resource.h"     /* 嵌入资源 ID 定义 */
 #pragma comment(lib, "wtsapi32.lib")
 #pragma comment(lib, "userenv.lib")
 
@@ -538,6 +533,79 @@ cleanup:
  * 参考 StarlightGUI (Elevator.h / KernelInstance.cpp / DriverUtils.cpp) 实现。
  * 技术路线: 安全描述符覆盖 → 特权启用 → TrustedInstaller 提权 → 内核驱动加载
  * ================================================================ */
+
+/* ---- 嵌入式驱动资源释放 ---- */
+
+/**
+ * @brief 从 exe 资源中释放嵌入的内核驱动到磁盘
+ *
+ * Sirius.sys 以 RCDATA 类型嵌入到 exe 中，运行时按需写到磁盘。
+ * 优先写入 exe 所在目录（无需管理员），失败则尝试临时目录。
+ *
+ * @param outPath  [out] 释放后的完整驱动路径（调用者提供 MAX_PATH 大小的缓冲区）
+ * @return TRUE 成功，FALSE 失败
+ */
+static BOOL ExtractEmbeddedDriver(WCHAR outPath[MAX_PATH]) {
+    /* 从当前 exe 的资源段加载嵌入的 Sirius.sys */
+    HRSRC hRes = FindResourceA(NULL, MAKEINTRESOURCEA(IDR_SIRIUS_DRIVER),
+                               RT_RCDATA);
+    if (!hRes) {
+        printf("[Extract] FindResource 失败 (错误: %lu)\n", GetLastError());
+        return FALSE;
+    }
+
+    HGLOBAL hGlobal = LoadResource(NULL, hRes);
+    if (!hGlobal) {
+        printf("[Extract] LoadResource 失败 (错误: %lu)\n", GetLastError());
+        return FALSE;
+    }
+
+    DWORD dwSize = SizeofResource(NULL, hRes);
+    LPVOID pData = LockResource(hGlobal);
+    if (!pData || dwSize == 0) {
+        printf("[Extract] LockResource 失败或资源大小为 0\n");
+        return FALSE;
+    }
+    printf("[Extract] 嵌入驱动大小: %lu bytes\n", dwSize);
+
+    /* 构造目标路径: <exe目录>\Sirius.sys */
+    WCHAR exeDir[MAX_PATH];
+    GetModuleFileNameW(NULL, exeDir, MAX_PATH);
+    WCHAR *slash = wcsrchr(exeDir, L'\\');
+    if (slash) *slash = L'\0';
+    wsprintfW(outPath, L"%s\\Sirius.sys", exeDir);
+
+    /* 写入文件 */
+    HANDLE hFile = CreateFileW(outPath, GENERIC_WRITE, 0, NULL,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        /* 降级: 尝试临时目录 */
+        WCHAR tempPath[MAX_PATH];
+        GetTempPathW(MAX_PATH, tempPath);
+        wsprintfW(outPath, L"%sSirius.sys", tempPath);
+        printf("[Extract] exe目录写入失败，尝试临时目录: %ls\n", outPath);
+        hFile = CreateFileW(outPath, GENERIC_WRITE, 0, NULL,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    }
+
+    if (hFile == INVALID_HANDLE_VALUE) {
+        printf("[Extract] 无法创建驱动文件 (错误: %lu)\n", GetLastError());
+        return FALSE;
+    }
+
+    DWORD bytesWritten = 0;
+    BOOL ok = WriteFile(hFile, pData, dwSize, &bytesWritten, NULL);
+    CloseHandle(hFile);
+
+    if (!ok || bytesWritten != dwSize) {
+        printf("[Extract] 写入驱动文件失败 (写入 %lu/%lu bytes)\n",
+               bytesWritten, dwSize);
+        return FALSE;
+    }
+
+    printf("[Extract] 驱动已释放到: %ls\n", outPath);
+    return TRUE;
+}
 
 /* ---- 查找进程ID ---- */
 
@@ -1558,22 +1626,15 @@ int main(int argc, char *argv[]) {
         printf("\n[Phase 2/5] 内核级权限提升\n");
         ElevateToKernelLevel();
 
-        /* ★ 加载内核驱动 Sirius.sys ★ */
-        printf("[Phase 2.5/5] 加载内核驱动\n");
+        /* ★ 加载内核驱动 Sirius.sys（从嵌入资源释放） ★ */
+        printf("[Phase 2.5/5] 提取并加载内核驱动\n");
         {
-            /* SCM 需要绝对路径，相对路径会因 SCM 工作目录=System32 而失败 */
-            WCHAR selfPath[MAX_PATH];
-            WCHAR driverFullPath[MAX_PATH];
-            GetModuleFileNameW(NULL, selfPath, MAX_PATH);
-            WCHAR *slash = wcsrchr(selfPath, L'\\');
-            if (slash) {
-                *slash = L'\0';
-                wsprintfW(driverFullPath, L"%s\\Sirius.sys", selfPath);
-                *slash = L'\\';
+            WCHAR driverPath[MAX_PATH];
+            if (ExtractEmbeddedDriver(driverPath)) {
+                LoadKernelDriver(L"SiriusDrv", driverPath);
             } else {
-                wcscpy_s(driverFullPath, MAX_PATH, L"Sirius.sys");
+                printf("[FAIL] 无法从资源释放驱动文件，跳过驱动加载\n");
             }
-            LoadKernelDriver(L"SiriusDrv", driverFullPath);
         }
 
         /* ★ 驱动加载状态检测 ★
