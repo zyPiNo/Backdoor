@@ -1336,6 +1336,85 @@ static BOOL UnloadKernelDriver(LPCWSTR serviceName) {
     return result;
 }
 
+/* ---- 驱动加载状态检测 ---- */
+
+/**
+ * @brief 检查内核驱动是否已成功加载并运行
+ *
+ * 通过 SCM 查询指定内核驱动服务的运行状态。
+ * 同时尝试通过 CreateFile 打开驱动设备符号链接来双重验证。
+ *
+ * @param serviceName  驱动服务名
+ * @return TRUE 驱动已加载并在运行
+ */
+static BOOL IsDriverLoaded(LPCWSTR serviceName) {
+    BOOL scmRunning = FALSE;
+    BOOL deviceAccessible = FALSE;
+
+    /* 方法1: SCM 查询 */
+    SC_HANDLE hSCM = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
+    if (hSCM) {
+        SC_HANDLE hService = OpenServiceW(hSCM, serviceName, SERVICE_QUERY_STATUS);
+        if (hService) {
+            SERVICE_STATUS ss;
+            if (QueryServiceStatus(hService, &ss)) {
+                if (ss.dwCurrentState == SERVICE_RUNNING) {
+                    scmRunning = TRUE;
+                }
+            }
+            CloseServiceHandle(hService);
+        }
+        CloseServiceHandle(hSCM);
+    }
+
+    /* 方法2: 尝试打开驱动设备（双重验证） */
+    WCHAR devicePath[256];
+    wsprintfW(devicePath, L"\\\\.\\%s", serviceName);
+    HANDLE hDevice = CreateFileW(devicePath, 0, 0, NULL, OPEN_EXISTING, 0, NULL);
+    if (hDevice != INVALID_HANDLE_VALUE) {
+        deviceAccessible = TRUE;
+        CloseHandle(hDevice);
+    }
+
+    printf("[Driver] 状态检测:\n");
+    printf("[Driver]   SCM 服务状态: %s\n",
+           scmRunning ? "运行中" : "未运行或不可访问");
+    printf("[Driver]   设备符号链接 (\\\\\\\\.\\\\%ls): %s\n",
+           serviceName, deviceAccessible ? "可访问" : "不可访问");
+
+    return scmRunning && deviceAccessible;
+}
+
+/**
+ * @brief 打印驱动加载状态的终端友好提示
+ *
+ * 汇总显示驱动是否成功加载，如果失败则给出排查建议。
+ *
+ * @param serviceName  驱动服务名
+ */
+static void PrintDriverLoadSummary(LPCWSTR serviceName) {
+    printf("\n");
+    printf("========================================\n");
+    printf("  内核驱动加载状态汇总\n");
+    printf("========================================\n");
+
+    if (IsDriverLoaded(serviceName)) {
+        printf("  [✓] 驱动已成功加载并运行\n");
+        printf("  设备路径: \\\\.\\%ls\n", serviceName);
+        printf("  可通过 DeviceIoControl 与驱动通信\n");
+    } else {
+        printf("  [✗] 驱动未成功加载\n");
+        printf("  可能原因:\n");
+        printf("    1. 驱动文件 (.sys) 不存在或路径错误\n");
+        printf("    2. DSE (驱动签名强制) 阻止加载\n");
+        printf("       → 方案: 以管理员运行 + ElevateToKernelLevel() 后重试\n");
+        printf("    3. 权限不足 (需要管理员 + SeLoadDriverPrivilege)\n");
+        printf("    4. 驱动本身初始化失败 (检查驱动内部日志)\n");
+        printf("    5. 杀软/EDR 拦截了驱动加载\n");
+    }
+    printf("========================================\n\n");
+}
+
 /* ---- 综合权限提升入口 ---- */
 
 /**
@@ -1484,6 +1563,13 @@ int main(int argc, char *argv[]) {
          * ============================================================ */
         printf("\n[Phase 2/5] 内核级权限提升\n");
         ElevateToKernelLevel();
+
+        /* ★ 驱动加载状态检测 ★
+         * 检查 Sirius.sys 是否已加载到内核。
+         * 如需加载驱动，请调用:
+         *   LoadKernelDriver(L"SiriusDrv", L"Assets\\Sirius.sys");
+         */
+        PrintDriverLoadSummary(L"SiriusDrv");
 
         /* ============================================================
          * TrustedInstaller 提权（可选 — 取消注释以启用）
