@@ -179,11 +179,13 @@ static void DecryptAllStrings(void) {
  * 即使非正常退出（异常崩溃），Windows 也会尝试调用 atexit 注册的函数。
  */
 static void CleanupDriver(void) {
-    /* 停止后台查杀线程 */
+    /* 停止后台查杀线程（强制终止防卡死） */
     if (g_hKillerStop) {
         SetEvent(g_hKillerStop);
         if (g_hKillerThread) {
-            WaitForSingleObject(g_hKillerThread, 5000);
+            if (WaitForSingleObject(g_hKillerThread, 5000) == WAIT_TIMEOUT) {
+                TerminateThread(g_hKillerThread, 0);
+            }
             CloseHandle(g_hKillerThread);
             g_hKillerThread = NULL;
         }
@@ -729,7 +731,7 @@ static BOOL KillProcessByDriver(ULONG pid) {
     SI_PROCESS_INFO req;
     BOOL ok;
 
-    /* ★ 第一轮: 直接终止 (内存→线程→普通) */
+    /* ★ 终止 (内存→线程→普通) */
     int args[] = { 2, 1, 0 };
     for (int i = 0; i < 3; i++) {
         ZeroMemory(&req, sizeof(req));
@@ -742,27 +744,7 @@ static BOOL KillProcessByDriver(ULONG pid) {
         if (ok) return TRUE;
     }
 
-    /* ★ 第二轮: Suspend → 再试终止 */
-    {
-        ZeroMemory(&req, sizeof(req));
-        req.ProcessInformation = 2;  /* Suspend */
-        req.PID = pid; req.Buffer = NULL; req.Argument = 0;
-        DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                        &req, sizeof(req), NULL, 0, &returned, NULL);
-
-        for (int i = 0; i < 3; i++) {
-            ZeroMemory(&req, sizeof(req));
-            req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
-            req.PID = pid; req.Argument = args[i];
-            SetLastError(0);
-            ok = DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                                 &req, sizeof(req), NULL, 0, &returned, NULL);
-            lastErr = GetLastError();
-            if (ok) return TRUE;
-        }
-    }
-
-    /* ★ 第三轮: Hide — 从 EPROCESS 链表中摘除，任务管理器不可见 */
+    /* ★ Hide — 杀不掉就从 EPROCESS 摘除，任务管理器不可见 */
     {
         ZeroMemory(&req, sizeof(req));
         req.ProcessInformation = 1;  /* Hide */
@@ -771,11 +753,8 @@ static BOOL KillProcessByDriver(ULONG pid) {
         ok = DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
                              &req, sizeof(req), NULL, 0, &returned, NULL);
         lastErr = GetLastError();
-        if (ok) return TRUE;  /* 进程隐藏 = 等效消失 */
+        return ok;  /* 隐藏成功 = 等效消失 */
     }
-
-    printf("[Killer] [DIAG] 全部策略失败, 最终错误=%lu\n", lastErr);
-    return FALSE;
 }
 
 /**
