@@ -1,8 +1,0 @@
-﻿namespace StarlightGUI
-{
-    [default_interface]
-    runtimeclass WindowPage : Microsoft.UI.Xaml.Controls.Page
-    {
-        WindowPage();
-    }
-}

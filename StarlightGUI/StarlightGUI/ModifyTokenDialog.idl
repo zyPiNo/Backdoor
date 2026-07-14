@@ -1,9 +1,0 @@
-﻿namespace StarlightGUI
-{
-    [default_interface]
-    runtimeclass ModifyTokenDialog : Microsoft.UI.Xaml.Controls.ContentDialog
-    {
-        ModifyTokenDialog();
-        UInt32 TargetPID{ get; };
-    }
-}

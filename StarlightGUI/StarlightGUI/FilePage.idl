@@ -1,8 +1,0 @@
-﻿namespace StarlightGUI
-{
-    [default_interface]
-    runtimeclass FilePage : Microsoft.UI.Xaml.Controls.Page
-    {
-        FilePage();
-    }
-}
