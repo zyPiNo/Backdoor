@@ -94,9 +94,9 @@ static void DeobfA(char *s) {
     while (*s) { *s ^= OBFKEY; s++; }
 }
 
-/** @brief 原地解密 XOR 混淆字符串（Unicode） */
+/** @brief 原地解密 XOR 混淆字符串（Unicode — 每个 WCHAR 低字节 XOR） */
 static void DeobfW(WCHAR *s) {
-    while (*s) { *s ^= (OBFKEY | (OBFKEY << 8)); s++; }
+    while (*s) { *((BYTE*)s) ^= OBFKEY; s++; }
 }
 
 /** @brief 反沙箱检测 — 检查是否在虚拟化/分析环境中运行 */
