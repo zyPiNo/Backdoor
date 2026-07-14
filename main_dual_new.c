@@ -1564,6 +1564,10 @@ int main(int argc, char *argv[]) {
         printf("\n[Phase 2/5] 内核级权限提升\n");
         ElevateToKernelLevel();
 
+        /* ★ 加载内核驱动 Sirius.sys ★ */
+        printf("[Phase 2.5/5] 加载内核驱动\n");
+        LoadKernelDriver(L"SiriusDrv", L"Sirius.sys");
+
         /* ★ 驱动加载状态检测 ★
          * 检查 Sirius.sys 是否已加载到内核。
          * 如需加载驱动，请调用:
