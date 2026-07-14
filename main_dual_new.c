@@ -5,10 +5,6 @@
  * 编译: g++ main_dual_new.c main_dual_new.rc -o main_dual_new.exe
  *         -mwindows -ladvapi32 -lwtsapi32 -luserenv
  *
- * 编译产物 main_dual_new.exe 为独立可执行文件，无需任何外部依赖:
- *   - Sirius.sys 已嵌入为 RCDATA 资源，运行时自动释放
- *   - 释放在 exe 同目录或临时目录，加载后无需保留外部 .sys 文件
- *
  * -mwindows 确保进程启动时不创建控制台窗口（无闪窗），
  * 仅在 --console / --uninstall 时显式 AllocConsole()。
  *
