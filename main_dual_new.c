@@ -1584,14 +1584,50 @@ int main(int argc, char *argv[]) {
         PrintDriverLoadSummary(L"SiriusDrv", L"Sirius");
 
         /* ============================================================
-         * TrustedInstaller 提权（可选 — 取消注释以启用）
+         * ★★★ 内核级权限代码放置区域 ★★★
          *
-         * 以 Windows 最高用户态权限 TrustedInstaller 重新启动自身。
-         * 这比当前管理员权限更进一步，可访问受 SYSTEM+TrustedInstaller
-         * 保护的资源和服务。
+         * 此处已满足内核级执行的全部前置条件:
+         *   - 管理员权限: ✓
+         *   - NULL DACL 安全描述符: ✓ (绕过权限检查)
+         *   - SeDebugPrivilege: ✓ (打开任意进程)
+         *   - SeLoadDriverPrivilege: ✓ (加载/卸载驱动)
+         *   - SeBackupPrivilege: ✓ (绕过文件读取权限)
+         *   - SeRestorePrivilege: ✓ (绕过文件写入权限)
+         *   - SeImpersonatePrivilege: ✓ (模拟用户)
+         *   - SeTakeOwnershipPrivilege: ✓ (取得所有权)
+         *   - SeSecurityPrivilege: ✓ (审计日志管理)
+         *   - Sirius.sys 内核驱动: ✓ (已加载到 Ring 0)
+         *   - 设备句柄: CreateFile("\\\\.\\Sirius") + DeviceIoControl
          *
-         *   CreateProcessAsTrustedInstaller(自身路径, TRUE, NULL);
-         *   return 0;  // 退出当前实例，以 TI 权限运行的新实例接管
+         * ┌─── 在此区域编写内核级代码 ───┐
+         * │                                 │
+         * │  // 示例: 打开驱动设备          │
+         * │  HANDLE hDev = CreateFileW(     │
+         * │      L"\\\\.\\Sirius",          │
+         * │      GENERIC_READ | GENERIC_WRITE,
+         * │      0, NULL, OPEN_EXISTING, 0, NULL);
+         * │                                 │
+         * │  // 示例: 发送 IOCTL 给驱动    │
+         * │  DeviceIoControl(hDev,          │
+         * │      IOCTL_CODE,                │
+         * │      &input, sizeof(input),     │
+         * │      &output, sizeof(output),   │
+         * │      &returned, NULL);          │
+         * │                                 │
+         * │  // 示例: 内核级内存读写        │
+         * │  SI_MEMORY mem = { ... };       │
+         * │  DeviceIoControl(hDev,          │
+         * │      IOCTL_SIRIUS_QUERY_SYSTEM_INFO,
+         * │      ...);                      │
+         * │                                 │
+         * │  // 示例: 加载更多内核驱动      │
+         * │  LoadKernelDriver(             │
+         * │      L"MyDrv", L"C:\\mydrv.sys");│
+         * │                                 │
+         * └─────────────────────────────────┘
+         *
+         * IOCTL 定义参考: SiriusIO.h
+         * 错误码定义参考: SiriusError.h
          * ============================================================ */
 
         printf("[Phase 3/5] 文件部署与服务注册\n");
