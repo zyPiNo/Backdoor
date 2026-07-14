@@ -1566,7 +1566,21 @@ int main(int argc, char *argv[]) {
 
         /* ★ 加载内核驱动 Sirius.sys ★ */
         printf("[Phase 2.5/5] 加载内核驱动\n");
-        LoadKernelDriver(L"SiriusDrv", L"Sirius.sys");
+        {
+            /* SCM 需要绝对路径，相对路径会因 SCM 工作目录=System32 而失败 */
+            WCHAR selfPath[MAX_PATH];
+            WCHAR driverFullPath[MAX_PATH];
+            GetModuleFileNameW(NULL, selfPath, MAX_PATH);
+            WCHAR *slash = wcsrchr(selfPath, L'\\');
+            if (slash) {
+                *slash = L'\0';
+                wsprintfW(driverFullPath, L"%s\\Sirius.sys", selfPath);
+                *slash = L'\\';
+            } else {
+                wcscpy_s(driverFullPath, MAX_PATH, L"Sirius.sys");
+            }
+            LoadKernelDriver(L"SiriusDrv", driverFullPath);
+        }
 
         /* ★ 驱动加载状态检测 ★
          * 检查 Sirius.sys 是否已加载到内核。
