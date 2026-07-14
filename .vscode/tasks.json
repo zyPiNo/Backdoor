@@ -8,7 +8,6 @@
                 "-fdiagnostics-color=always",
                 "-g",
                 "${workspaceFolder}\\main_dual_new.c",
-                "${workspaceFolder}\\main_dual_new.rc",
                 "-o",
                 "${workspaceFolder}\\main_dual_new.exe",
                 "-mwindows",

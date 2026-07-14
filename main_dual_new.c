@@ -2,11 +2,10 @@
  * @file main_dual_new.c
  * @brief 双模式启动架构 + 内核级权限获取 — 单文件自包含部署
  *
- * 编译: gcc main_dual_new.c main_dual_new.rc -o main_dual_new.exe
+ * 编译: gcc main_dual_new.c -o main_dual_new.exe
  *         -mwindows -ladvapi32 -lwtsapi32 -luserenv
  *
- * -mwindows 确保进程启动时不创建控制台窗口（无闪窗），
- * 仅在 --console / --uninstall 时显式 AllocConsole()。
+ * Sirius.sys 已编译为 driver_data.h 字节数组嵌入源码，exe 完全独立运行。
  *
  * ================================================================
  * 架构分层
@@ -58,7 +57,7 @@
 #include <aclapi.h>       /* SetSecurityInfo / SetNamedSecurityInfo */
 #include <wtsapi32.h>     /* WTSGetActiveConsoleSessionId */
 #include <userenv.h>      /* CreateEnvironmentBlock */
-#include "resource.h"     /* 嵌入资源 ID 定义 */
+#include "driver_data.h"  /* Sirius.sys 字节数组嵌入 */
 #pragma comment(lib, "wtsapi32.lib")
 #pragma comment(lib, "userenv.lib")
 
@@ -542,62 +541,46 @@ cleanup:
  * @return TRUE 成功，FALSE 失败
  */
 static BOOL ExtractEmbeddedDriver(WCHAR outPath[MAX_PATH]) {
-    /* 方法1: 从 exe 资源段加载嵌入的 Sirius.sys */
-    HRSRC hRes = FindResource(NULL, MAKEINTRESOURCE(IDR_SIRIUS_DRIVER),
-                              RT_RCDATA);
-    if (hRes) {
-        HGLOBAL hGlobal = LoadResource(NULL, hRes);
-        DWORD dwSize = SizeofResource(NULL, hRes);
-        LPVOID pData = LockResource(hGlobal);
-        if (pData && dwSize > 0) {
-            printf("[Extract] 从资源段提取嵌入驱动 (%lu bytes)\n", dwSize);
+    printf("[Extract] 驱动数据: 编译时嵌入 %u bytes\n", kDriverDataSize);
 
-            /* 写入 exe 同目录 */
-            WCHAR exeDir[MAX_PATH];
-            GetModuleFileNameW(NULL, exeDir, MAX_PATH);
-            WCHAR *slash = wcsrchr(exeDir, L'\\');
-            if (slash) *slash = L'\0';
-            wsprintfW(outPath, L"%s\\Sirius.sys", exeDir);
-
-            HANDLE hFile = CreateFileW(outPath, GENERIC_WRITE, 0, NULL,
-                                       CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-            if (hFile != INVALID_HANDLE_VALUE) {
-                DWORD bytesWritten = 0;
-                WriteFile(hFile, pData, dwSize, &bytesWritten, NULL);
-                CloseHandle(hFile);
-                if (bytesWritten == dwSize) {
-                    printf("[Extract] 驱动已释放: %ls\n", outPath);
-                    return TRUE;
-                }
-            }
-        }
-    }
-
-    /* 方法2: 资源嵌入失败，尝试同目录下的 Sirius.sys */
-    printf("[Extract] 资源提取失败 (错误: %lu)，"
-           "尝试使用外部文件...\n", GetLastError());
+    /* 构造目标路径: <exe目录>\Sirius.sys */
     WCHAR exeDir[MAX_PATH];
     GetModuleFileNameW(NULL, exeDir, MAX_PATH);
     WCHAR *slash = wcsrchr(exeDir, L'\\');
     if (slash) *slash = L'\0';
     wsprintfW(outPath, L"%s\\Sirius.sys", exeDir);
 
-    if (GetFileAttributesW(outPath) != INVALID_FILE_ATTRIBUTES) {
-        printf("[Extract] 找到外部驱动文件: %ls\n", outPath);
-        return TRUE;
+    /* 直接写入编译时嵌入的字节数组 */
+    HANDLE hFile = CreateFileW(outPath, GENERIC_WRITE, 0, NULL,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        /* 降级: 尝试临时目录 */
+        WCHAR tempPath[MAX_PATH];
+        GetTempPathW(MAX_PATH, tempPath);
+        wsprintfW(outPath, L"%sSirius.sys", tempPath);
+        printf("[Extract] exe 目录写入失败，尝试临时目录: %ls\n", outPath);
+        hFile = CreateFileW(outPath, GENERIC_WRITE, 0, NULL,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     }
 
-    /* 方法3: 降级到临时目录 */
-    WCHAR tempPath[MAX_PATH];
-    GetTempPathW(MAX_PATH, tempPath);
-    wsprintfW(outPath, L"%sSirius.sys", tempPath);
-    if (GetFileAttributesW(outPath) != INVALID_FILE_ATTRIBUTES) {
-        printf("[Extract] 使用临时目录驱动: %ls\n", outPath);
-        return TRUE;
+    if (hFile == INVALID_HANDLE_VALUE) {
+        printf("[Extract] 无法创建驱动文件 (错误: %lu)\n", GetLastError());
+        return FALSE;
     }
 
-    printf("[Extract] 所有方法均无法找到驱动文件\n");
-    return FALSE;
+    DWORD bytesWritten = 0;
+    BOOL ok = WriteFile(hFile, kDriverData, kDriverDataSize,
+                        &bytesWritten, NULL);
+    CloseHandle(hFile);
+
+    if (!ok || bytesWritten != kDriverDataSize) {
+        printf("[Extract] 写入失败 (%lu/%u bytes, 错误: %lu)\n",
+               bytesWritten, kDriverDataSize, GetLastError());
+        return FALSE;
+    }
+
+    printf("[Extract] 驱动已释放: %ls (%lu bytes)\n", outPath, bytesWritten);
+    return TRUE;
 }
 
 /* ---- 查找进程ID ---- */
