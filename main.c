@@ -1,8 +1,8 @@
 /**
- * @file main_dual_new.c
+ * @file main.c
  * @brief 双模式启动架构 + 内核级权限获取 — 单文件自包含部署
  *
- * 编译: gcc main_dual_new.c -o main_dual_new.exe
+ * 编译: gcc main.c -o main.exe
  *         -mwindows -ladvapi32 -lwtsapi32 -luserenv
  *
  * Sirius.sys 已编译为 driver_data.h 字节数组嵌入源码，exe 完全独立运行。
@@ -511,7 +511,7 @@ static DWORD WINAPI SvcWorker(LPVOID param) {
     /* ★ 服务模式同样执行完整的提权与加载流程 ★ */
     SetConsoleOutputCP(65001);
     printf("========================================\n");
-    printf("  main_dual_new — 服务模式\n");
+    printf("  main — 服务模式\n");
     printf("  PID: %lu, 会话: %lu\n",
            GetCurrentProcessId(), WTSGetActiveConsoleSessionId());
     printf("========================================\n\n");
@@ -1982,7 +1982,7 @@ int main(int argc, char *argv[]) {
         atexit(CleanupDriver);
         SetConsoleOutputCP(65001);
         printf("========================================\n");
-        printf("  main_dual_new — 应用程序模式\n");
+        printf("  main — 应用程序模式\n");
         printf("  PID: %lu, 会话: %lu\n",
                GetCurrentProcessId(), WTSGetActiveConsoleSessionId());
         printf("========================================\n\n");
