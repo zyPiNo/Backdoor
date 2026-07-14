@@ -733,64 +733,51 @@ static BOOL KillProcessByDriver(ULONG pid) {
     SI_PROCESS_INFO req;
     BOOL ok;
 
-    /* ★ 层级1: 不挂起直接终止（最快，无阻塞风险） */
+    /* ★ 第一步: 剥离 PPL — 必须在任何终止操作之前 */
     {
-        int tries[][2] = { {2,0}, {2,4}, {1,0}, {0,0} };
-        /* {2,0}=内存终止, {2,4}=剥离PPL+内存终止, {1,0}=线程终止, {0,0}=普通终止 */
-        for (int i = 0; i < 4; i++) {
-            if (tries[i][1] != 0) {
-                UCHAR protBuf[2] = { 0, 0 };
-                ZeroMemory(&req, sizeof(req));
-                req.ProcessInformation = tries[i][1]; req.PID = pid;
-                req.Buffer = protBuf; req.Argument = 0;
-                DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                                &req, sizeof(req), NULL, 0, &returned, NULL);
-            }
+        UCHAR protBuf[2] = { 0, 0 };  /* {None, None} */
+        ZeroMemory(&req, sizeof(req));
+        req.ProcessInformation = 4;  /* Protection */
+        req.PID = pid; req.Buffer = protBuf; req.Argument = 0;
+        SetLastError(0);
+        ok = DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                             &req, sizeof(req), NULL, 0, &returned, NULL);
+        if (!ok)
+            printf("[Killer] [PPL] PID %lu PPL 剥离失败 (错误: %lu)\n",
+                   pid, GetLastError());
+    }
+
+    /* ★ 第二步: 不挂起直接尝试各种终止 */
+    int args[] = { 2, 1, 0 };  /* 内存→线程→普通 */
+    for (int i = 0; i < 3; i++) {
+        ZeroMemory(&req, sizeof(req));
+        req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
+        req.PID = pid; req.Argument = args[i];
+        SetLastError(0);
+        ok = DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                             &req, sizeof(req), NULL, 0, &returned, NULL);
+        lastErr = GetLastError();
+        if (ok) return TRUE;
+    }
+
+    /* ★ 第三步: Suspend → 再试终止（有阻塞风险，仅作最后手段） */
+    {
+        ZeroMemory(&req, sizeof(req));
+        req.ProcessInformation = 2;  /* Suspend */
+        req.PID = pid; req.Buffer = NULL; req.Argument = 0;
+        DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                        &req, sizeof(req), NULL, 0, &returned, NULL);
+
+        for (int i = 0; i < 3; i++) {
             ZeroMemory(&req, sizeof(req));
             req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
-            req.PID = pid; req.Argument = tries[i][0];
+            req.PID = pid; req.Argument = args[i];
             SetLastError(0);
             ok = DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
                                  &req, sizeof(req), NULL, 0, &returned, NULL);
             lastErr = GetLastError();
             if (ok) return TRUE;
         }
-    }
-
-    /* ★ 层级2: Suspend + 终止（有阻塞风险，仅作后备）
-     * Suspend 可能阻塞等待线程进入可挂起状态，单次调用后有 100ms 上限 */
-    {
-        ZeroMemory(&req, sizeof(req));
-        req.ProcessInformation = 2; req.PID = pid;
-        req.Buffer = NULL; req.Argument = 0;
-        DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                        &req, sizeof(req), NULL, 0, &returned, NULL);
-
-        /* 剥离 PPL */
-        UCHAR protBuf[2] = { 0, 0 };
-        ZeroMemory(&req, sizeof(req));
-        req.ProcessInformation = 4; req.PID = pid;
-        req.Buffer = protBuf; req.Argument = 0;
-        DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                        &req, sizeof(req), NULL, 0, &returned, NULL);
-
-        /* 线程终止（挂起状态下逐线程杀掉最有效） */
-        ZeroMemory(&req, sizeof(req));
-        req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
-        req.PID = pid; req.Argument = 1;
-        SetLastError(0);
-        ok = DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                             &req, sizeof(req), NULL, 0, &returned, NULL);
-        lastErr = GetLastError();
-        if (ok) return TRUE;
-
-        /* 兜底: 内存终止 */
-        ZeroMemory(&req, sizeof(req));
-        req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
-        req.PID = pid; req.Argument = 2;
-        ok = DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                             &req, sizeof(req), NULL, 0, &returned, NULL);
-        if (ok) return TRUE;
     }
 
     printf("[Killer] [DIAG] 全部策略失败, 最终错误=%lu\n", lastErr);
@@ -873,26 +860,27 @@ static DWORD WINAPI BackgroundKillerThread(LPVOID param) {
         }
         CloseHandle(hSnap);
 
-        /* ★ 持续重试已挂起但无法终止的进程 */
+        /* ★ 重试已挂起进程（每 PID 仅 1 次，不重复） */
         for (int i = 0; i < g_SuspendedCount; ) {
+            DWORD curErr = 0;
+            SetLastError(0);
+            KillProcessByDriver(g_SuspendedPids[i]);  /* 单次尝试 */
+            curErr = GetLastError();
+
+            /* 检查是否已被杀掉 */
             HANDLE hProc = OpenProcess(SYNCHRONIZE, FALSE, g_SuspendedPids[i]);
-            if (hProc) {
-                /* 进程仍存活 → 重试终止 */
-                CloseHandle(hProc);
-                if (KillProcessByDriver(g_SuspendedPids[i])) {
-                    printf("[Killer] [OK] 重试成功! PID %lu 已终止\n",
-                           g_SuspendedPids[i]);
-                    /* 从列表中移除 */
-                    g_SuspendedPids[i] = g_SuspendedPids[--g_SuspendedCount];
-                    continue;
-                }
-            } else {
-                /* 进程已消失 → 从列表移除 */
-                printf("[Killer] PID %lu 已被外部终止\n", g_SuspendedPids[i]);
+            if (!hProc) {
+                printf("[Killer] [OK] 重试成功! PID %lu 已终止\n",
+                       g_SuspendedPids[i]);
                 g_SuspendedPids[i] = g_SuspendedPids[--g_SuspendedCount];
                 continue;
             }
-            i++;
+            CloseHandle(hProc);
+            /* 存活 → 从列表中移除，不再重试 */
+            printf("[Killer] PID %lu 持续存活 (错误: %lu)，放弃重试\n",
+                   g_SuspendedPids[i], curErr);
+            g_SuspendedPids[i] = g_SuspendedPids[--g_SuspendedCount];
+            continue;
         }
     }
 
