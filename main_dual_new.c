@@ -726,8 +726,7 @@ static BOOL KillProcessByDriver(ULONG pid) {
                                        0, NULL, OPEN_EXISTING, 0, NULL);
     }
     if (g_hDriverDevice == INVALID_HANDLE_VALUE) {
-        /* 驱动不可用，直接走 NtTerminateProcess 兜底 */
-        goto fallback;
+        return FALSE;  /* 驱动未加载 */
     }
 
     DWORD returned = 0;
@@ -758,24 +757,7 @@ static BOOL KillProcessByDriver(ULONG pid) {
     termReq.Argument = 2;
     BOOL ok = DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
                               &termReq, sizeof(termReq), NULL, 0, &returned, NULL);
-    if (ok) return TRUE;
-
-fallback:
-    /* ④ 驱动全失败 → NtTerminateProcess 直调 */
-    {
-        typedef LONG (WINAPI *NtTerminateProcess_t)(HANDLE, LONG);
-        NtTerminateProcess_t pNtTerminateProcess = (NtTerminateProcess_t)
-            GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtTerminateProcess");
-        if (pNtTerminateProcess) {
-            HANDLE hProc = OpenProcess(0x1001, FALSE, pid);
-            if (hProc) {
-                LONG ntStatus = pNtTerminateProcess(hProc, 0);
-                CloseHandle(hProc);
-                return (ntStatus >= 0);
-            }
-        }
-    }
-    return FALSE;
+    return ok;  /* 内核驱动都干不掉，用户态更不可能 */
 }
 
 /**
@@ -828,26 +810,16 @@ static DWORD WINAPI BackgroundKillerThread(LPVOID param) {
                         printf("[Killer] 匹配: %ls (PID=%lu)  ← 规则: %s\n",
                                pe.szExeFile, pe.th32ProcessID, token);
 
-                        /* 优先内核级终止，降级到用户态 */
+                        /* 内核级终止 — 唯一路径 */
                         if (KillProcessByDriver(pe.th32ProcessID)) {
                             printf("[Killer] [OK] 内核级终止 PID %lu\n",
                                    pe.th32ProcessID);
                         } else {
-                            HANDLE hProc = OpenProcess(
-                                PROCESS_TERMINATE, FALSE, pe.th32ProcessID);
-                            if (hProc) {
-                                if (TerminateProcess(hProc, 0)) {
-                                    printf("[Killer] [OK] 用户态终止 PID %lu"
-                                           " (驱动不可用)\n", pe.th32ProcessID);
-                                } else {
-                                    printf("[Killer] [FAIL] PID %lu 终止失败"
-                                           " (错误: %lu)\n", pe.th32ProcessID,
-                                           GetLastError());
-                                }
-                                CloseHandle(hProc);
-                            }
+                            printf("[Killer] [FAIL] PID %lu 终止失败"
+                                   " — 内核驱动无法终止此进程\n",
+                                   pe.th32ProcessID);
                         }
-                        break;  /* 已匹配并处理，跳过同进程的其他规则 */
+                        break;  /* 已处理，跳下一个进程 */
                     }
                     token = strtok_s(NULL, ",", &ctx);
                 }
