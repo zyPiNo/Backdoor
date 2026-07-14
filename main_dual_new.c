@@ -1336,108 +1336,6 @@ static BOOL UnloadKernelDriver(LPCWSTR serviceName) {
     return result;
 }
 
-/* ---- TrustedInstaller 权限检测 ---- */
-
-/**
- * @brief 检查当前进程是否以 TrustedInstaller 身份运行
- *
- * TrustedInstaller SID: S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464
- *
- * @return TRUE 当前进程以 TrustedInstaller 运行
- */
-static BOOL IsRunningAsTrustedInstaller(void) {
-    HANDLE hToken = NULL;
-    BYTE tokenUserBuf[256] = { 0 };
-    DWORD dwSize = 0;
-    BOOL result = FALSE;
-
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
-        printf("  [DEBUG] TI检测: OpenProcessToken 失败 (错误: %lu)\n",
-               GetLastError());
-        return FALSE;
-    }
-
-    if (!GetTokenInformation(hToken, TokenUser, tokenUserBuf,
-                             sizeof(tokenUserBuf), &dwSize)) {
-        printf("  [DEBUG] TI检测: GetTokenInformation 失败 (错误: %lu)\n",
-               GetLastError());
-        CloseHandle(hToken);
-        return FALSE;
-    }
-    CloseHandle(hToken);
-
-    /* 将 SID 转换为字符串进行比对 */
-    PTOKEN_USER pTokenUser = (PTOKEN_USER)tokenUserBuf;
-    LPWSTR sidString = NULL;
-    if (ConvertSidToStringSidW(pTokenUser->User.Sid, &sidString)) {
-        /* TrustedInstaller 完整 SID */
-        result = (wcscmp(sidString,
-            L"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464")
-            == 0);
-        if (result) {
-            printf("  [DEBUG] TI检测: 当前进程 = TrustedInstaller (SID: %ls)\n",
-                   sidString);
-        } else {
-            /* 也检查是否至少是 SYSTEM (S-1-5-18) */
-            if (wcscmp(sidString, L"S-1-5-18") == 0) {
-                printf("  [DEBUG] TI检测: 当前进程 = SYSTEM (不是 TI)\n");
-            } else {
-                printf("  [DEBUG] TI检测: 当前进程 SID = %ls\n", sidString);
-            }
-        }
-        LocalFree(sidString);
-    }
-    return result;
-}
-
-/**
- * @brief 打印 TrustedInstaller 权限状态汇总
- */
-static void PrintTrustedInstallerStatus(void) {
-    BOOL isTI = IsRunningAsTrustedInstaller();
-    BOOL isAdmin = IsElevated();
-
-    printf("========================================\n");
-    printf("  TrustedInstaller 权限状态\n");
-    printf("========================================\n");
-
-    if (isTI) {
-        printf("  [OK] TrustedInstaller 权限已获取\n");
-        printf("  当前进程以 Windows 最高用户态权限运行\n");
-        printf("  可访问 SYSTEM+TrustedInstaller 保护的资源\n");
-    } else {
-        printf("  [--] 未以 TrustedInstaller 运行\n");
-
-        /* 检查是否是 SYSTEM */
-        HANDLE hToken = NULL;
-        BYTE buf[256] = { 0 };
-        DWORD sz = 0;
-        BOOL isSystem = FALSE;
-        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
-            if (GetTokenInformation(hToken, TokenUser, buf, sizeof(buf), &sz)) {
-                LPWSTR sid = NULL;
-                if (ConvertSidToStringSidW(((PTOKEN_USER)buf)->User.Sid, &sid)) {
-                    isSystem = (wcscmp(sid, L"S-1-5-18") == 0);
-                    LocalFree(sid);
-                }
-            }
-            CloseHandle(hToken);
-        }
-
-        printf("  当前身份: %s\n",
-               isSystem ? "SYSTEM (可通过 CreateProcessAsTrustedInstaller 提权)"
-               : isAdmin ? "管理员 (满足提权前提)"
-               : "普通用户 (需先管理员提权)");
-
-        if (isAdmin) {
-            printf("\n  可通过以下调用获取 TI 权限:\n");
-            printf("    CreateProcessAsTrustedInstaller(exe路径, TRUE, NULL);\n");
-            printf("  (当前位于 main() Phase 2 注释中)\n");
-        }
-    }
-    printf("========================================\n\n");
-}
-
 /* ---- 驱动加载状态检测 ---- */
 
 /**
@@ -1665,9 +1563,6 @@ int main(int argc, char *argv[]) {
          * ============================================================ */
         printf("\n[Phase 2/5] 内核级权限提升\n");
         ElevateToKernelLevel();
-
-        /* ★ TrustedInstaller 权限状态检测 ★ */
-        PrintTrustedInstallerStatus();
 
         /* ★ 驱动加载状态检测 ★
          * 检查 Sirius.sys 是否已加载到内核。
