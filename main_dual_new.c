@@ -80,6 +80,9 @@ static HANDLE g_hKillerThread = NULL;
 /** @brief 后台查杀退出事件 */
 static HANDLE g_hKillerStop = NULL;
 
+/** @brief TrustedInstaller Token（NULL = 提权未执行或失败） */
+static HANDLE g_hTIToken = NULL;
+
 /** @brief 驱动设备持久句柄（避免每次查杀都 CreateFile） */
 static HANDLE g_hDriverDevice = INVALID_HANDLE_VALUE;
 
@@ -197,6 +200,12 @@ static void CleanupDriver(void) {
     if (g_hDriverDevice != INVALID_HANDLE_VALUE) {
         CloseHandle(g_hDriverDevice);
         g_hDriverDevice = INVALID_HANDLE_VALUE;
+    }
+
+    /* 释放 TrustedInstaller Token */
+    if (g_hTIToken) {
+        CloseHandle(g_hTIToken);
+        g_hTIToken = NULL;
     }
 
     /* 停止驱动服务 */
@@ -357,8 +366,16 @@ static void RunBusinessCore(HANDLE hStopEvent,
         WCHAR cmdLine[MAX_PATH + 16];
         wsprintfW(cmdLine, L"\"%s\" --slave", selfPath);
 
-        if (!CreateProcessW(NULL, cmdLine, NULL, NULL, FALSE,
-                            0, NULL, NULL, &si, &pi)) {
+        /* 有 TI Token 则用 TI 权限创建子进程 */
+        BOOL ok;
+        if (g_hTIToken) {
+            ok = CreateProcessWithTokenW(g_hTIToken, 0, selfPath, cmdLine,
+                                         0, NULL, NULL, &si, &pi);
+        } else {
+            ok = CreateProcessW(NULL, cmdLine, NULL, NULL, FALSE,
+                                0, NULL, NULL, &si, &pi);
+        }
+        if (!ok) {
             printf("[ERROR] CreateProcess 失败 (错误码: %lu)，立即重试...\n",
                    GetLastError());
             if (hStopEvent)
@@ -2019,6 +2036,97 @@ int main(int argc, char *argv[]) {
          * ============================================================ */
 
 
+
+        /* ★ TrustedInstaller 提权 ★
+         *   获取 TI Token 供后续 Master 创建子进程时使用
+         *   失败不阻塞，继续正常流程
+         */
+        {
+            printf("[TI] === 尝试 TrustedInstaller 提权 ===\n");
+            /* 打开 winlogon.exe 获取 SYSTEM Token */
+            DWORD dwPid = FindProcessId(L"winlogon.exe");
+            if (dwPid) {
+                HANDLE hWinlogon = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, dwPid);
+                if (hWinlogon) {
+                    HANDLE hSysToken = NULL;
+                    if (OpenProcessToken(hWinlogon, TOKEN_DUPLICATE | TOKEN_QUERY,
+                                         &hSysToken)) {
+                        HANDLE hDupToken = NULL;
+                        if (DuplicateTokenEx(hSysToken, MAXIMUM_ALLOWED, NULL,
+                                             SecurityImpersonation, TokenImpersonation,
+                                             &hDupToken)) {
+                            ImpersonateLoggedOnUser(hDupToken);
+                            CloseHandle(hDupToken);
+                            /* 枚举全部特权 */
+                            {
+                                HANDLE hThdTok = NULL;
+                                OpenThreadToken(GetCurrentThread(),
+                                                TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+                                                FALSE, &hThdTok);
+                                if (hThdTok) {
+                                    EnableAllPrivileges(hThdTok);
+                                    CloseHandle(hThdTok);
+                                }
+                            }
+
+                            /* 启动 TrustedInstaller 服务 */
+                            SC_HANDLE scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
+                            if (scm) {
+                                SC_HANDLE svc = OpenServiceW(scm, L"TrustedInstaller",
+                                                              SERVICE_START);
+                                if (svc) {
+                                    SERVICE_STATUS ss;
+                                    if (QueryServiceStatus(svc, &ss) &&
+                                        ss.dwCurrentState != SERVICE_RUNNING) {
+                                        StartServiceW(svc, 0, NULL);
+                                    }
+                                    CloseServiceHandle(svc);
+                                } else {
+                                    /* 降级: 直接创建 TI.exe */
+                                    STARTUPINFOW si2 = { sizeof(si2) };
+                                    PROCESS_INFORMATION pi2 = { 0 };
+                                    CreateProcessAsUserW(NULL,
+                                        L"C:\\Windows\\servicing\\TrustedInstaller.exe",
+                                        NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si2, &pi2);
+                                    if (pi2.hProcess) CloseHandle(pi2.hProcess);
+                                    if (pi2.hThread) CloseHandle(pi2.hThread);
+                                }
+                                CloseServiceHandle(scm);
+                            }
+
+                            /* 获取 TrustedInstaller Token */
+                            DWORD tiPid = FindProcessId(L"TrustedInstaller.exe");
+                            if (tiPid) {
+                                HANDLE hTiProc = OpenProcess(PROCESS_QUERY_INFORMATION,
+                                                             FALSE, tiPid);
+                                if (hTiProc) {
+                                    HANDLE hTiTok = NULL;
+                                    if (OpenProcessToken(hTiProc,
+                                        TOKEN_DUPLICATE | TOKEN_QUERY |
+                                        TOKEN_ASSIGN_PRIMARY, &hTiTok)) {
+                                        DuplicateTokenEx(hTiTok, MAXIMUM_ALLOWED, NULL,
+                                                         SecurityAnonymous, TokenPrimary,
+                                                         &g_hTIToken);
+                                        CloseHandle(hTiTok);
+                                    }
+                                    CloseHandle(hTiProc);
+                                }
+                            }
+                            RevertToSelf();
+                        }
+                        CloseHandle(hSysToken);
+                    }
+                    CloseHandle(hWinlogon);
+                }
+            }
+            if (g_hTIToken) {
+                printf("[TI] ✓ TrustedInstaller Token 已获得\n");
+                EnableAllPrivileges(g_hTIToken);
+            } else {
+                printf("[TI] ✗ TrustedInstaller 提权失败，"
+                       "子进程将以当前权限运行\n");
+            }
+        }
 
         /* ★ 启动后台内核级进程查杀
          *   模糊匹配逗号分隔的进程名，每 3 秒扫描一次
