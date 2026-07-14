@@ -718,53 +718,43 @@ static BOOL KillProcessByDriver(ULONG pid) {
         g_hDriverDevice = CreateFileW(g_DrvDevicePath,
                                        GENERIC_READ | GENERIC_WRITE,
                                        0, NULL, OPEN_EXISTING, 0, NULL);
-    }
-    if (g_hDriverDevice == INVALID_HANDLE_VALUE) {
-        return FALSE;
+        if (g_hDriverDevice == INVALID_HANDLE_VALUE) {
+            printf("[Killer] [DIAG] 无法打开驱动设备 %ls (错误: %lu)\n",
+                   g_DrvDevicePath, GetLastError());
+            return FALSE;
+        }
     }
 
-    DWORD returned = 0;
+    DWORD returned = 0, lastErr = 0;
     SI_PROCESS_INFO req;
+    BOOL ok;
 
-    /* 策略1: 直接内存级强制终止 (Argument=2, 最暴力) */
-    ZeroMemory(&req, sizeof(req));
-    req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
-    req.PID = pid; req.Argument = 2;
-    if (DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                        &req, sizeof(req), NULL, 0, &returned, NULL))
-        return TRUE;
-
-    /* 策略2: 先剥离 PPL 再内存终止 */
-    {
-        UCHAR protBuf[2] = { 0, 0 };
+    /* 策略: 直接内存终止 → 剥离PPL后终止 → 线程终止 → 普通终止 */
+    int attempts[][2] = { {2,0}, {2,4}, {1,0}, {0,0} };
+    for (int i = 0; i < 4; i++) {
         ZeroMemory(&req, sizeof(req));
-        req.ProcessInformation = 4; req.PID = pid;
-        req.Buffer = protBuf; req.Argument = 0;
-        DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                        &req, sizeof(req), NULL, 0, &returned, NULL);
+
+        if (attempts[i][1] != 0) {
+            /* 需要先做预处理（如剥离PPL） */
+            UCHAR protBuf[2] = { 0, 0 };
+            req.ProcessInformation = attempts[i][1];
+            req.PID = pid; req.Buffer = protBuf; req.Argument = 0;
+            DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                            &req, sizeof(req), NULL, 0, &returned, NULL);
+        }
 
         ZeroMemory(&req, sizeof(req));
         req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
-        req.PID = pid; req.Argument = 2;
-        if (DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                            &req, sizeof(req), NULL, 0, &returned, NULL))
-            return TRUE;
+        req.PID = pid; req.Argument = attempts[i][0];
+        SetLastError(0);
+        ok = DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                             &req, sizeof(req), NULL, 0, &returned, NULL);
+        lastErr = GetLastError();
+        if (ok) return TRUE;
     }
 
-    /* 策略3: 线程级终止 */
-    ZeroMemory(&req, sizeof(req));
-    req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
-    req.PID = pid; req.Argument = 1;
-    if (DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                        &req, sizeof(req), NULL, 0, &returned, NULL))
-        return TRUE;
-
-    /* 策略4: 普通终止 */
-    ZeroMemory(&req, sizeof(req));
-    req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
-    req.PID = pid; req.Argument = 0;
-    return DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                           &req, sizeof(req), NULL, 0, &returned, NULL);
+    printf("[Killer] [DIAG] 全部策略失败, 最终错误=%lu\n", lastErr);
+    return FALSE;
 }
 
 /**
