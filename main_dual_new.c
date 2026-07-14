@@ -718,7 +718,7 @@ static BOOL KillProcessByDriver(ULONG pid) {
     req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
     req.PID = pid;
     req.Buffer = NULL;
-    req.Argument = 0;  /* normal termination */
+    req.Argument = 2;  /* memory-based forced termination — 最强力终止 */
 
     DWORD returned = 0;
     BOOL ok = DeviceIoControl(hDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
