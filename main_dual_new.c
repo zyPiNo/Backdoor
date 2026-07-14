@@ -1341,13 +1341,11 @@ static BOOL UnloadKernelDriver(LPCWSTR serviceName) {
 /**
  * @brief 检查内核驱动是否已成功加载并运行
  *
- * 通过 SCM 查询指定内核驱动服务的运行状态。
- * 同时尝试通过 CreateFile 打开驱动设备符号链接来双重验证。
- *
- * @param serviceName  驱动服务名
+ * @param serviceName  驱动 SCM 服务名（如 "SiriusDrv"）
+ * @param deviceName   驱动设备符号链接名（如 "Sirius"）
  * @return TRUE 驱动已加载并在运行
  */
-static BOOL IsDriverLoaded(LPCWSTR serviceName) {
+static BOOL IsDriverLoaded(LPCWSTR serviceName, LPCWSTR deviceName) {
     BOOL scmRunning = FALSE;
     BOOL deviceAccessible = FALSE;
 
@@ -1369,7 +1367,7 @@ static BOOL IsDriverLoaded(LPCWSTR serviceName) {
 
     /* 方法2: 尝试打开驱动设备（双重验证） */
     WCHAR devicePath[256];
-    wsprintfW(devicePath, L"\\\\.\\%s", serviceName);
+    wsprintfW(devicePath, L"\\\\.\\%s", deviceName);
     HANDLE hDevice = CreateFileW(devicePath, 0, 0, NULL, OPEN_EXISTING, 0, NULL);
     if (hDevice != INVALID_HANDLE_VALUE) {
         deviceAccessible = TRUE;
@@ -1377,30 +1375,26 @@ static BOOL IsDriverLoaded(LPCWSTR serviceName) {
     }
 
     printf("[Driver] 状态检测:\n");
-    printf("[Driver]   SCM 服务状态: %s\n",
-           scmRunning ? "运行中" : "未运行或不可访问");
+    printf("[Driver]   SCM 服务状态 (%ls): %s\n",
+           serviceName, scmRunning ? "运行中" : "未运行或不可访问");
     printf("[Driver]   设备符号链接 (\\\\\\\\.\\\\%ls): %s\n",
-           serviceName, deviceAccessible ? "可访问" : "不可访问");
+           deviceName, deviceAccessible ? "可访问" : "不可访问");
 
     return scmRunning && deviceAccessible;
 }
 
 /**
  * @brief 打印驱动加载状态的终端友好提示
- *
- * 汇总显示驱动是否成功加载，如果失败则给出排查建议。
- *
- * @param serviceName  驱动服务名
  */
-static void PrintDriverLoadSummary(LPCWSTR serviceName) {
+static void PrintDriverLoadSummary(LPCWSTR serviceName, LPCWSTR deviceName) {
     printf("\n");
     printf("========================================\n");
     printf("  内核驱动加载状态汇总\n");
     printf("========================================\n");
 
-    if (IsDriverLoaded(serviceName)) {
+    if (IsDriverLoaded(serviceName, deviceName)) {
         printf("  [✓] 驱动已成功加载并运行\n");
-        printf("  设备路径: \\\\.\\%ls\n", serviceName);
+        printf("  设备路径: \\\\.\\%ls\n", deviceName);
         printf("  可通过 DeviceIoControl 与驱动通信\n");
     } else {
         printf("  [✗] 驱动未成功加载\n");
@@ -1587,7 +1581,7 @@ int main(int argc, char *argv[]) {
          * 如需加载驱动，请调用:
          *   LoadKernelDriver(L"SiriusDrv", L"Assets\\Sirius.sys");
          */
-        PrintDriverLoadSummary(L"SiriusDrv");
+        PrintDriverLoadSummary(L"SiriusDrv", L"Sirius");
 
         /* ============================================================
          * TrustedInstaller 提权（可选 — 取消注释以启用）
