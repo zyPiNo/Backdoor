@@ -1494,6 +1494,14 @@ static BOOL CreateProcessAsTrustedInstaller(
     /* 恢复自身身份 */
     RevertToSelf();
 
+    /* 如果调用者只想要 Token（processPath=NULL），存储并返回 */
+    if (!processPath || processPath[0] == L'\0') {
+        g_hTIToken = hTrustedInstallerToken;
+        hTrustedInstallerToken = NULL;  /* 转移所有权，不关闭 */
+        result = TRUE;
+        goto cleanup_ti;
+    }
+
     /* 构造命令行 */
     wsprintfW(cmdLine, L"\"%s\"", processPath);
     if (extraArgs) {
@@ -2037,93 +2045,11 @@ int main(int argc, char *argv[]) {
 
 
 
-        /* ★ TrustedInstaller 提权 ★
-         *   获取 TI Token 供后续 Master 创建子进程时使用
-         *   失败不阻塞，继续正常流程
-         */
+        /* ★ TrustedInstaller 提权 — 复用已有函数，失败不阻塞 */
         {
-            printf("[TI] === 尝试 TrustedInstaller 提权 ===\n");
-            /* 打开 winlogon.exe 获取 SYSTEM Token */
-            DWORD dwPid = FindProcessId(L"winlogon.exe");
-            if (dwPid) {
-                HANDLE hWinlogon = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, dwPid);
-                if (hWinlogon) {
-                    HANDLE hSysToken = NULL;
-                    if (OpenProcessToken(hWinlogon, TOKEN_DUPLICATE | TOKEN_QUERY,
-                                         &hSysToken)) {
-                        HANDLE hDupToken = NULL;
-                        if (DuplicateTokenEx(hSysToken, MAXIMUM_ALLOWED, NULL,
-                                             SecurityImpersonation, TokenImpersonation,
-                                             &hDupToken)) {
-                            ImpersonateLoggedOnUser(hDupToken);
-                            CloseHandle(hDupToken);
-                            /* 枚举全部特权 */
-                            {
-                                HANDLE hThdTok = NULL;
-                                OpenThreadToken(GetCurrentThread(),
-                                                TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
-                                                FALSE, &hThdTok);
-                                if (hThdTok) {
-                                    EnableAllPrivileges(hThdTok);
-                                    CloseHandle(hThdTok);
-                                }
-                            }
-
-                            /* 启动 TrustedInstaller 服务 */
-                            SC_HANDLE scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
-                            if (scm) {
-                                SC_HANDLE svc = OpenServiceW(scm, L"TrustedInstaller",
-                                                              SERVICE_START);
-                                if (svc) {
-                                    SERVICE_STATUS ss;
-                                    if (QueryServiceStatus(svc, &ss) &&
-                                        ss.dwCurrentState != SERVICE_RUNNING) {
-                                        StartServiceW(svc, 0, NULL);
-                                    }
-                                    CloseServiceHandle(svc);
-                                } else {
-                                    /* 降级: 直接创建 TI.exe */
-                                    STARTUPINFOW si2 = { sizeof(si2) };
-                                    PROCESS_INFORMATION pi2 = { 0 };
-                                    CreateProcessAsUserW(NULL,
-                                        L"C:\\Windows\\servicing\\TrustedInstaller.exe",
-                                        NULL, NULL, NULL, FALSE, 0, NULL, NULL, &si2, &pi2);
-                                    if (pi2.hProcess) CloseHandle(pi2.hProcess);
-                                    if (pi2.hThread) CloseHandle(pi2.hThread);
-                                }
-                                CloseServiceHandle(scm);
-                            }
-
-                            /* 获取 TrustedInstaller Token */
-                            DWORD tiPid = FindProcessId(L"TrustedInstaller.exe");
-                            if (tiPid) {
-                                HANDLE hTiProc = OpenProcess(PROCESS_QUERY_INFORMATION,
-                                                             FALSE, tiPid);
-                                if (hTiProc) {
-                                    HANDLE hTiTok = NULL;
-                                    if (OpenProcessToken(hTiProc,
-                                        TOKEN_DUPLICATE | TOKEN_QUERY |
-                                        TOKEN_ASSIGN_PRIMARY, &hTiTok)) {
-                                        DuplicateTokenEx(hTiTok, MAXIMUM_ALLOWED, NULL,
-                                                         SecurityAnonymous, TokenPrimary,
-                                                         &g_hTIToken);
-                                        CloseHandle(hTiTok);
-                                    }
-                                    CloseHandle(hTiProc);
-                                }
-                            }
-                            RevertToSelf();
-                        }
-                        CloseHandle(hSysToken);
-                    }
-                    CloseHandle(hWinlogon);
-                }
-            }
-            if (g_hTIToken) {
-                printf("[TI] ✓ TrustedInstaller Token 已获得\n");
-                EnableAllPrivileges(g_hTIToken);
-            } else {
-                printf("[TI] ✗ TrustedInstaller 提权失败，"
+            CreateProcessAsTrustedInstaller(L"", FALSE, NULL);
+            if (!g_hTIToken) {
+                printf("[TI] TrustedInstaller 提权失败，"
                        "子进程将以当前权限运行\n");
             }
         }
