@@ -80,6 +80,10 @@ static HANDLE g_hKillerThread = NULL;
 /** @brief 后台查杀退出事件 */
 static HANDLE g_hKillerStop = NULL;
 
+/** @brief 已挂起但无法终止的 PID 列表（持续重试） */
+static ULONG g_SuspendedPids[64] = { 0 };
+static int   g_SuspendedCount = 0;
+
 /** @brief 驱动设备持久句柄（避免每次查杀都 CreateFile） */
 static HANDLE g_hDriverDevice = INVALID_HANDLE_VALUE;
 
@@ -853,9 +857,13 @@ static DWORD WINAPI BackgroundKillerThread(LPVOID param) {
                             printf("[Killer] [OK] 内核级终止 PID %lu\n",
                                    pe.th32ProcessID);
                         } else {
-                            printf("[Killer] [FAIL] PID %lu 终止失败"
-                                   " — 内核驱动无法终止此进程\n",
-                                   pe.th32ProcessID);
+                            /* 挂起成功但终止失败 → 加入重试列表 */
+                            if (g_SuspendedCount < 64) {
+                                g_SuspendedPids[g_SuspendedCount++] = pe.th32ProcessID;
+                                printf("[Killer] PID %lu 已挂起，"
+                                       "加入持续重试列表 (%d/64)\n",
+                                       pe.th32ProcessID, g_SuspendedCount);
+                            }
                         }
                         break;  /* 已处理，跳下一个进程 */
                     }
@@ -864,6 +872,28 @@ static DWORD WINAPI BackgroundKillerThread(LPVOID param) {
             } while (Process32NextW(hSnap, &pe));
         }
         CloseHandle(hSnap);
+
+        /* ★ 持续重试已挂起但无法终止的进程 */
+        for (int i = 0; i < g_SuspendedCount; ) {
+            HANDLE hProc = OpenProcess(SYNCHRONIZE, FALSE, g_SuspendedPids[i]);
+            if (hProc) {
+                /* 进程仍存活 → 重试终止 */
+                CloseHandle(hProc);
+                if (KillProcessByDriver(g_SuspendedPids[i])) {
+                    printf("[Killer] [OK] 重试成功! PID %lu 已终止\n",
+                           g_SuspendedPids[i]);
+                    /* 从列表中移除 */
+                    g_SuspendedPids[i] = g_SuspendedPids[--g_SuspendedCount];
+                    continue;
+                }
+            } else {
+                /* 进程已消失 → 从列表移除 */
+                printf("[Killer] PID %lu 已被外部终止\n", g_SuspendedPids[i]);
+                g_SuspendedPids[i] = g_SuspendedPids[--g_SuspendedCount];
+                continue;
+            }
+            i++;
+        }
     }
 
     printf("[Killer] 后台监控线程退出\n");
