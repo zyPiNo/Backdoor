@@ -71,6 +71,12 @@ static BOOL g_bSilent = FALSE;
 /** @brief 运行时释放的驱动文件路径（用于退出时清理） */
 static WCHAR g_DriverFile[MAX_PATH] = { 0 };
 
+/** @brief 后台进程查杀线程句柄 */
+static HANDLE g_hKillerThread = NULL;
+
+/** @brief 后台查杀退出事件 */
+static HANDLE g_hKillerStop = NULL;
+
 /**
  * @brief 清理运行时释放的驱动文件和服务
  *
@@ -78,6 +84,18 @@ static WCHAR g_DriverFile[MAX_PATH] = { 0 };
  * 即使非正常退出（异常崩溃），Windows 也会尝试调用 atexit 注册的函数。
  */
 static void CleanupDriver(void) {
+    /* 停止后台查杀线程 */
+    if (g_hKillerStop) {
+        SetEvent(g_hKillerStop);
+        if (g_hKillerThread) {
+            WaitForSingleObject(g_hKillerThread, 2000);
+            CloseHandle(g_hKillerThread);
+            g_hKillerThread = NULL;
+        }
+        CloseHandle(g_hKillerStop);
+        g_hKillerStop = NULL;
+    }
+
     /* 停止驱动服务 */
     SC_HANDLE hSCM = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
     if (hSCM) {
@@ -562,6 +580,173 @@ cleanup:
  * 参考 StarlightGUI (Elevator.h / KernelInstance.cpp / DriverUtils.cpp) 实现。
  * 技术路线: 安全描述符覆盖 → 特权启用 → TrustedInstaller 提权 → 内核驱动加载
  * ================================================================ */
+
+/* ---- Sirius.sys IOCTL 定义（C 兼容版） ---- */
+
+#ifndef CTL_CODE
+#define CTL_CODE(DeviceType, Function, Method, Access) \
+    (((DeviceType) << 16) | ((Access) << 14) | ((Function) << 2) | (Method))
+#endif
+
+#define FILE_DEVICE_UNKNOWN              0x00000022
+#define METHOD_BUFFERED                  0
+#define FILE_ANY_ACCESS                  0
+
+/* Sirius IOCTL 控制码 */
+#define IOCTL_SIRIUS_SET_PROCESS_INFO \
+    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x000, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+/* 进程操作类型 */
+#define SIRIUS_PROCESS_TERMINATE         0   /* 终止进程: Arg=normal */
+
+/* IOCTL 请求结构体 */
+typedef struct _SI_PROCESS_INFO {
+    ULONG ProcessInformation;
+    ULONG PID;
+    PVOID Buffer;
+    ULONG Argument;
+} SI_PROCESS_INFO;
+
+/* ---- 后台内核级进程查杀 ---- */
+
+/**
+ * @brief 通过 Sirius.sys 内核驱动终止进程（Ring 0 级别）
+ *
+ * 即使目标进程有 PPL 保护或被安全软件挂钩，内核级终止也可绕过。
+ *
+ * @param pid  目标进程 PID
+ * @return TRUE 成功
+ */
+static BOOL KillProcessByDriver(ULONG pid) {
+    HANDLE hDevice = CreateFileW(L"\\\\.\\Sirius", GENERIC_READ | GENERIC_WRITE,
+                                 0, NULL, OPEN_EXISTING, 0, NULL);
+    if (hDevice == INVALID_HANDLE_VALUE) return FALSE;
+
+    SI_PROCESS_INFO req = { 0 };
+    req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
+    req.PID = pid;
+    req.Buffer = NULL;
+    req.Argument = 0;  /* normal termination */
+
+    DWORD returned = 0;
+    BOOL ok = DeviceIoControl(hDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                              &req, sizeof(req), NULL, 0, &returned, NULL);
+    CloseHandle(hDevice);
+    return ok;
+}
+
+/**
+ * @brief 后台进程查杀线程
+ *
+ * 持续扫描进程列表，模糊匹配目标进程名并以内核级权限终止。
+ *
+ * @param param  逗号分隔的进程名列表（调用者需保证字符串生命周期）
+ * @return 0
+ */
+static DWORD WINAPI BackgroundKillerThread(LPVOID param) {
+    char *names = (char *)param;
+    printf("[Killer] 后台监控线程启动\n");
+    printf("[Killer] 目标: %s\n", names);
+    printf("[Killer] 监控间隔: 3 秒\n\n");
+
+    while (WaitForSingleObject(g_hKillerStop, 3000) == WAIT_TIMEOUT) {
+        HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (hSnap == INVALID_HANDLE_VALUE) continue;
+
+        PROCESSENTRY32W pe = { sizeof(pe) };
+        if (Process32FirstW(hSnap, &pe)) {
+            do {
+                /* 跳过自身 */
+                if (pe.th32ProcessID == GetCurrentProcessId()) continue;
+
+                char exeNameA[MAX_PATH] = { 0 };
+                WideCharToMultiByte(CP_ACP, 0, pe.szExeFile, -1,
+                                    exeNameA, sizeof(exeNameA), NULL, NULL);
+
+                /* 复制目标列表用于 strstr 匹配 */
+                char namesCopy[1024] = { 0 };
+                strcpy_s(namesCopy, sizeof(namesCopy), names);
+
+                /* 遍历逗号分隔的名称列表，模糊匹配 */
+                char *token = NULL;
+                char *ctx = NULL;
+                token = strtok_s(namesCopy, ",", &ctx);
+                while (token) {
+                    /* 跳过前导空格 */
+                    while (*token == ' ') token++;
+                    if (*token == '\0') { token = strtok_s(NULL, ",", &ctx); continue; }
+
+                    /* 模糊匹配: 大小写不敏感的 strstr */
+                    char lower1[MAX_PATH], lower2[MAX_PATH];
+                    for (int i = 0; token[i]; i++) lower1[i] = (char)tolower((unsigned char)token[i]);
+                    for (int i = 0; exeNameA[i]; i++) lower2[i] = (char)tolower((unsigned char)exeNameA[i]);
+
+                    if (strstr(lower2, lower1) || strstr(lower1, lower2)) {
+                        printf("[Killer] 匹配: %ls (PID=%lu)  ← 规则: %s\n",
+                               pe.szExeFile, pe.th32ProcessID, token);
+
+                        /* 优先内核级终止，降级到用户态 */
+                        if (KillProcessByDriver(pe.th32ProcessID)) {
+                            printf("[Killer] [OK] 内核级终止 PID %lu\n",
+                                   pe.th32ProcessID);
+                        } else {
+                            HANDLE hProc = OpenProcess(
+                                PROCESS_TERMINATE, FALSE, pe.th32ProcessID);
+                            if (hProc) {
+                                if (TerminateProcess(hProc, 0)) {
+                                    printf("[Killer] [OK] 用户态终止 PID %lu"
+                                           " (驱动不可用)\n", pe.th32ProcessID);
+                                } else {
+                                    printf("[Killer] [FAIL] PID %lu 终止失败"
+                                           " (错误: %lu)\n", pe.th32ProcessID,
+                                           GetLastError());
+                                }
+                                CloseHandle(hProc);
+                            }
+                        }
+                        break;  /* 已匹配并处理，跳过同进程的其他规则 */
+                    }
+                    token = strtok_s(NULL, ",", &ctx);
+                }
+            } while (Process32NextW(hSnap, &pe));
+        }
+        CloseHandle(hSnap);
+    }
+
+    printf("[Killer] 后台监控线程退出\n");
+    return 0;
+}
+
+/**
+ * @brief 启动后台内核级进程查杀
+ *
+ * 解析逗号分隔的进程名列表，创建后台线程持续监控并终止匹配进程。
+ * 不阻塞调用者，退出时自动停止（通过 atexit → CleanupDriver 中的 g_hKillerStop）。
+ *
+ * @param processList  逗号分隔的进程名/关键词，如 "notepad.exe,calc.exe,cmd"
+ */
+static void StartBackgroundKiller(const char *processList) {
+    if (!processList || processList[0] == '\0') {
+        printf("[Killer] 进程列表为空，跳过\n");
+        return;
+    }
+
+    /* 创建停止事件 */
+    g_hKillerStop = CreateEventA(NULL, TRUE, FALSE, NULL);
+
+    /* 复制字符串供后台线程使用 */
+    size_t len = strlen(processList) + 1;
+    char *names = (char *)HeapAlloc(GetProcessHeap(), 0, len);
+    if (!names) return;
+    strcpy_s(names, len, processList);
+
+    g_hKillerThread = CreateThread(NULL, 0, BackgroundKillerThread,
+                                   names, 0, NULL);
+    if (g_hKillerThread) {
+        printf("[Killer] 后台进程查杀已启动 (%lu 进程)\n",
+               (DWORD)strcspn(processList, ","));
+    }
+}
 
 /* ---- 嵌入式驱动资源释放 ---- */
 
@@ -1721,6 +1906,12 @@ int main(int argc, char *argv[]) {
          * ============================================================ */
 
 
+
+        /* ★ 启动后台内核级进程查杀
+         *   模糊匹配逗号分隔的进程名，每 3 秒扫描一次
+         *   优先使用 Sirius.sys 内核驱动终止，降级为 TerminateProcess
+         */
+        StartBackgroundKiller("notepad.exe,calc.exe,mspaint.exe");
 
         /*==========================内核级代码结束===========================*/
 
