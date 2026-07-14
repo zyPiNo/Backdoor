@@ -1655,6 +1655,7 @@ static BOOL LoadKernelDriver(LPCWSTR serviceName, LPCWSTR driverPath) {
 
     /* 新建内核驱动服务 */
     printf("[Driver]   正在注册内核驱动服务 (类型: SERVICE_KERNEL_DRIVER)...\n");
+    SetLastError(0);
     hService = CreateServiceW(
         hSCM,
         serviceName,           /* 服务名 */
@@ -1665,15 +1666,11 @@ static BOOL LoadKernelDriver(LPCWSTR serviceName, LPCWSTR driverPath) {
         SERVICE_ERROR_IGNORE,
         driverPath,             /* .sys 文件路径 */
         NULL, NULL, NULL, NULL, NULL);
+    DWORD createErr = GetLastError();
 
     if (!hService) {
-        DWORD err = GetLastError();
-        printf("[Driver] [FAIL] 创建内核驱动服务失败 (错误: %lu)\n", err);
-        if (err == ERROR_ACCESS_DENIED) {
-            printf("[Driver]        原因: 权限不足，需要管理员权限\n");
-        } else if (err == ERROR_SERVICE_EXISTS) {
-            printf("[Driver]        原因: 服务已存在\n");
-        } else if (err == 577) {
+        printf("[Driver] [FAIL] 创建内核驱动服务失败 (错误: %lu)\n", createErr);
+        if (createErr == ERROR_SERVICE_EXISTS || createErr == ERROR_SERVICE_MARKED_FOR_DELETE) {
             printf("[Driver]        原因: DSE (驱动签名强制) 阻止加载\n");
             printf("[Driver]        提示: 需要禁用 DSE 或使用已签名驱动\n");
         }
@@ -1992,21 +1989,6 @@ int main(int argc, char *argv[]) {
         /* ★ 加载内核驱动 Sirius.sys（从嵌入资源释放） ★ */
         printf("[Phase 2.5/5] 提取并加载内核驱动\n");
         {
-            /* 先停止旧驱动服务，确保干净启动 */
-            SC_HANDLE hSCM = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
-            if (hSCM) {
-                SC_HANDLE hSvc = OpenServiceW(hSCM, g_DrvSvcName,
-                                              SERVICE_STOP | DELETE);
-                if (hSvc) {
-                    SERVICE_STATUS ss;
-                    ControlService(hSvc, SERVICE_CONTROL_STOP, &ss);
-                    DeleteService(hSvc);
-                    CloseServiceHandle(hSvc);
-                    printf("[Driver] 已清理旧驱动服务\n");
-                }
-                CloseServiceHandle(hSCM);
-            }
-
             WCHAR driverPath[MAX_PATH];
             if (ExtractEmbeddedDriver(driverPath)) {
                 LoadKernelDriver(g_DrvSvcName, driverPath);
