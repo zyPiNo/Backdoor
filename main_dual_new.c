@@ -1630,6 +1630,10 @@ int main(int argc, char *argv[]) {
          * 错误码定义参考: SiriusError.h
          * ============================================================ */
 
+
+
+        /*==========================内核级代码结束===========================*/
+
         printf("[Phase 3/5] 文件部署与服务注册\n");
 
         char targetPath[MAX_PATH] = "C:\\Program Files\\Microsoft\\shell.exe";
