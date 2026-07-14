@@ -729,7 +729,26 @@ static BOOL KillProcessByDriver(ULONG pid) {
     SI_PROCESS_INFO req;
     BOOL ok;
 
-    /* 策略: 直接内存终止 → 剥离PPL后终止 → 线程终止 → 普通终止 */
+    /* ★ 策略0: Suspend(2) + 内存终止
+     * 挂起进程所有线程使其无力自保，再内存终止 */
+    {
+        ZeroMemory(&req, sizeof(req));
+        req.ProcessInformation = 2;  /* Suspend */
+        req.PID = pid; req.Buffer = NULL; req.Argument = 0;
+        DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                        &req, sizeof(req), NULL, 0, &returned, NULL);
+
+        ZeroMemory(&req, sizeof(req));
+        req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
+        req.PID = pid; req.Argument = 2;
+        SetLastError(0);
+        ok = DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                             &req, sizeof(req), NULL, 0, &returned, NULL);
+        lastErr = GetLastError();
+        if (ok) return TRUE;
+    }
+
+    /* 策略1-4: 直接内存终止 → 剥离PPL后终止 → 线程终止 → 普通终止 */
     int attempts[][2] = { {2,0}, {2,4}, {1,0}, {0,0} };
     for (int i = 0; i < 4; i++) {
         ZeroMemory(&req, sizeof(req));
