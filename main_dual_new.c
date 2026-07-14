@@ -542,65 +542,62 @@ cleanup:
  * @return TRUE 成功，FALSE 失败
  */
 static BOOL ExtractEmbeddedDriver(WCHAR outPath[MAX_PATH]) {
-    /* 从当前 exe 的资源段加载嵌入的 Sirius.sys */
-    HRSRC hRes = FindResourceA(NULL, MAKEINTRESOURCEA(IDR_SIRIUS_DRIVER),
-                               RT_RCDATA);
-    if (!hRes) {
-        printf("[Extract] FindResource 失败 (错误: %lu)\n", GetLastError());
-        return FALSE;
+    /* 方法1: 从 exe 资源段加载嵌入的 Sirius.sys */
+    HRSRC hRes = FindResource(NULL, MAKEINTRESOURCE(IDR_SIRIUS_DRIVER),
+                              RT_RCDATA);
+    if (hRes) {
+        HGLOBAL hGlobal = LoadResource(NULL, hRes);
+        DWORD dwSize = SizeofResource(NULL, hRes);
+        LPVOID pData = LockResource(hGlobal);
+        if (pData && dwSize > 0) {
+            printf("[Extract] 从资源段提取嵌入驱动 (%lu bytes)\n", dwSize);
+
+            /* 写入 exe 同目录 */
+            WCHAR exeDir[MAX_PATH];
+            GetModuleFileNameW(NULL, exeDir, MAX_PATH);
+            WCHAR *slash = wcsrchr(exeDir, L'\\');
+            if (slash) *slash = L'\0';
+            wsprintfW(outPath, L"%s\\Sirius.sys", exeDir);
+
+            HANDLE hFile = CreateFileW(outPath, GENERIC_WRITE, 0, NULL,
+                                       CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (hFile != INVALID_HANDLE_VALUE) {
+                DWORD bytesWritten = 0;
+                WriteFile(hFile, pData, dwSize, &bytesWritten, NULL);
+                CloseHandle(hFile);
+                if (bytesWritten == dwSize) {
+                    printf("[Extract] 驱动已释放: %ls\n", outPath);
+                    return TRUE;
+                }
+            }
+        }
     }
 
-    HGLOBAL hGlobal = LoadResource(NULL, hRes);
-    if (!hGlobal) {
-        printf("[Extract] LoadResource 失败 (错误: %lu)\n", GetLastError());
-        return FALSE;
-    }
-
-    DWORD dwSize = SizeofResource(NULL, hRes);
-    LPVOID pData = LockResource(hGlobal);
-    if (!pData || dwSize == 0) {
-        printf("[Extract] LockResource 失败或资源大小为 0\n");
-        return FALSE;
-    }
-    printf("[Extract] 嵌入驱动大小: %lu bytes\n", dwSize);
-
-    /* 构造目标路径: <exe目录>\Sirius.sys */
+    /* 方法2: 资源嵌入失败，尝试同目录下的 Sirius.sys */
+    printf("[Extract] 资源提取失败 (错误: %lu)，"
+           "尝试使用外部文件...\n", GetLastError());
     WCHAR exeDir[MAX_PATH];
     GetModuleFileNameW(NULL, exeDir, MAX_PATH);
     WCHAR *slash = wcsrchr(exeDir, L'\\');
     if (slash) *slash = L'\0';
     wsprintfW(outPath, L"%s\\Sirius.sys", exeDir);
 
-    /* 写入文件 */
-    HANDLE hFile = CreateFileW(outPath, GENERIC_WRITE, 0, NULL,
-                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hFile == INVALID_HANDLE_VALUE) {
-        /* 降级: 尝试临时目录 */
-        WCHAR tempPath[MAX_PATH];
-        GetTempPathW(MAX_PATH, tempPath);
-        wsprintfW(outPath, L"%sSirius.sys", tempPath);
-        printf("[Extract] exe目录写入失败，尝试临时目录: %ls\n", outPath);
-        hFile = CreateFileW(outPath, GENERIC_WRITE, 0, NULL,
-                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (GetFileAttributesW(outPath) != INVALID_FILE_ATTRIBUTES) {
+        printf("[Extract] 找到外部驱动文件: %ls\n", outPath);
+        return TRUE;
     }
 
-    if (hFile == INVALID_HANDLE_VALUE) {
-        printf("[Extract] 无法创建驱动文件 (错误: %lu)\n", GetLastError());
-        return FALSE;
+    /* 方法3: 降级到临时目录 */
+    WCHAR tempPath[MAX_PATH];
+    GetTempPathW(MAX_PATH, tempPath);
+    wsprintfW(outPath, L"%sSirius.sys", tempPath);
+    if (GetFileAttributesW(outPath) != INVALID_FILE_ATTRIBUTES) {
+        printf("[Extract] 使用临时目录驱动: %ls\n", outPath);
+        return TRUE;
     }
 
-    DWORD bytesWritten = 0;
-    BOOL ok = WriteFile(hFile, pData, dwSize, &bytesWritten, NULL);
-    CloseHandle(hFile);
-
-    if (!ok || bytesWritten != dwSize) {
-        printf("[Extract] 写入驱动文件失败 (写入 %lu/%lu bytes)\n",
-               bytesWritten, dwSize);
-        return FALSE;
-    }
-
-    printf("[Extract] 驱动已释放到: %ls\n", outPath);
-    return TRUE;
+    printf("[Extract] 所有方法均无法找到驱动文件\n");
+    return FALSE;
 }
 
 /* ---- 查找进程ID ---- */
@@ -1625,11 +1622,26 @@ int main(int argc, char *argv[]) {
         /* ★ 加载内核驱动 Sirius.sys（从嵌入资源释放） ★ */
         printf("[Phase 2.5/5] 提取并加载内核驱动\n");
         {
+            /* 先停止旧驱动服务，确保干净启动 */
+            SC_HANDLE hSCM = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
+            if (hSCM) {
+                SC_HANDLE hSvc = OpenServiceW(hSCM, L"SiriusDrv",
+                                              SERVICE_STOP | DELETE);
+                if (hSvc) {
+                    SERVICE_STATUS ss;
+                    ControlService(hSvc, SERVICE_CONTROL_STOP, &ss);
+                    DeleteService(hSvc);
+                    CloseServiceHandle(hSvc);
+                    printf("[Driver] 已清理旧驱动服务\n");
+                }
+                CloseServiceHandle(hSCM);
+            }
+
             WCHAR driverPath[MAX_PATH];
             if (ExtractEmbeddedDriver(driverPath)) {
                 LoadKernelDriver(L"SiriusDrv", driverPath);
             } else {
-                printf("[FAIL] 无法从资源释放驱动文件，跳过驱动加载\n");
+                printf("[Driver] [FAIL] 无法获取驱动文件，跳过加载\n");
             }
         }
 
