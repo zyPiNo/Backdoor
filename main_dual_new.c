@@ -714,53 +714,57 @@ typedef struct _SI_PROCESS_INFO {
  * @return TRUE 成功
  */
 static BOOL KillProcessByDriver(ULONG pid) {
-    /* 确保驱动设备已打开 */
     if (g_hDriverDevice == INVALID_HANDLE_VALUE) {
         g_hDriverDevice = CreateFileW(g_DrvDevicePath,
                                        GENERIC_READ | GENERIC_WRITE,
                                        0, NULL, OPEN_EXISTING, 0, NULL);
     }
     if (g_hDriverDevice == INVALID_HANDLE_VALUE) {
-        return FALSE;  /* 驱动未加载 */
+        return FALSE;
     }
 
     DWORD returned = 0;
+    SI_PROCESS_INFO req;
 
-    /* ① 剥离 PPL 保护
-     * SI_PROCESS_PROTECTION: { ProtectionType=0(None), ProtectionLevel=0(None) }
-     */
+    /* 策略1: 直接内存级强制终止 (Argument=2, 最暴力) */
+    ZeroMemory(&req, sizeof(req));
+    req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
+    req.PID = pid; req.Argument = 2;
+    if (DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                        &req, sizeof(req), NULL, 0, &returned, NULL))
+        return TRUE;
+
+    /* 策略2: 先剥离 PPL 再内存终止 */
     {
         UCHAR protBuf[2] = { 0, 0 };
-        SI_PROCESS_INFO r = { 0 };
-        r.ProcessInformation = 4;  /* Protection */
-        r.PID = pid;
-        r.Buffer = protBuf;
-        r.Argument = 0;
+        ZeroMemory(&req, sizeof(req));
+        req.ProcessInformation = 4; req.PID = pid;
+        req.Buffer = protBuf; req.Argument = 0;
         DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                        &r, sizeof(r), NULL, 0, &returned, NULL);
+                        &req, sizeof(req), NULL, 0, &returned, NULL);
+
+        ZeroMemory(&req, sizeof(req));
+        req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
+        req.PID = pid; req.Argument = 2;
+        if (DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                            &req, sizeof(req), NULL, 0, &returned, NULL))
+            return TRUE;
     }
 
-    /* ② 标记为关键进程 — 占位 BOOLEAN TRUE */
-    {
-        BOOLEAN critVal = TRUE;
-        SI_PROCESS_INFO r = { 0 };
-        r.ProcessInformation = 5;  /* Critical */
-        r.PID = pid;
-        r.Buffer = &critVal;
-        r.Argument = 0;
-        DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                        &r, sizeof(r), NULL, 0, &returned, NULL);
-    }
+    /* 策略3: 线程级终止 */
+    ZeroMemory(&req, sizeof(req));
+    req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
+    req.PID = pid; req.Argument = 1;
+    if (DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                        &req, sizeof(req), NULL, 0, &returned, NULL))
+        return TRUE;
 
-    /* ③ 内存级强制终止 */
-    SI_PROCESS_INFO termReq = { 0 };
-    termReq.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
-    termReq.PID = pid;
-    termReq.Buffer = NULL;
-    termReq.Argument = 2;
-    BOOL ok = DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                              &termReq, sizeof(termReq), NULL, 0, &returned, NULL);
-    return ok;  /* 内核驱动都干不掉，用户态更不可能 */
+    /* 策略4: 普通终止 */
+    ZeroMemory(&req, sizeof(req));
+    req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
+    req.PID = pid; req.Argument = 0;
+    return DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                           &req, sizeof(req), NULL, 0, &returned, NULL);
 }
 
 /**
