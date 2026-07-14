@@ -729,22 +729,8 @@ static BOOL KillProcessByDriver(ULONG pid) {
     SI_PROCESS_INFO req;
     BOOL ok;
 
-    /* ★ 第一步: 剥离 PPL — 必须在任何终止操作之前 */
-    {
-        UCHAR protBuf[2] = { 0, 0 };  /* {None, None} */
-        ZeroMemory(&req, sizeof(req));
-        req.ProcessInformation = 4;  /* Protection */
-        req.PID = pid; req.Buffer = protBuf; req.Argument = 0;
-        SetLastError(0);
-        ok = DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                             &req, sizeof(req), NULL, 0, &returned, NULL);
-        if (!ok)
-            printf("[Killer] [PPL] PID %lu PPL 剥离失败 (错误: %lu)\n",
-                   pid, GetLastError());
-    }
-
-    /* ★ 第二步: 不挂起直接尝试各种终止 */
-    int args[] = { 2, 1, 0 };  /* 内存→线程→普通 */
+    /* ★ 第一轮: 直接终止 (内存→线程→普通) */
+    int args[] = { 2, 1, 0 };
     for (int i = 0; i < 3; i++) {
         ZeroMemory(&req, sizeof(req));
         req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
@@ -756,7 +742,7 @@ static BOOL KillProcessByDriver(ULONG pid) {
         if (ok) return TRUE;
     }
 
-    /* ★ 第三步: Suspend → 再试终止（有阻塞风险，仅作最后手段） */
+    /* ★ 第二轮: Suspend → 再试终止 */
     {
         ZeroMemory(&req, sizeof(req));
         req.ProcessInformation = 2;  /* Suspend */
