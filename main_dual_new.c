@@ -2,7 +2,7 @@
  * @file main_dual_new.c
  * @brief 双模式启动架构 + 内核级权限获取 — 单文件自包含部署
  *
- * 编译: g++ main_dual_new.c main_dual_new.rc -o main_dual_new.exe
+ * 编译: gcc main_dual_new.c main_dual_new.rc -o main_dual_new.exe
  *         -mwindows -ladvapi32 -lwtsapi32 -luserenv
  *
  * -mwindows 确保进程启动时不创建控制台窗口（无闪窗），
