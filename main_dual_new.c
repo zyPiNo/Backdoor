@@ -731,23 +731,31 @@ static BOOL KillProcessByDriver(ULONG pid) {
 
     DWORD returned = 0;
 
-    /* ① 剥离 PPL 保护 */
-    SI_PROCESS_INFO protReq = { 0 };
-    protReq.ProcessInformation = 4;  /* Protection */
-    protReq.PID = pid;
-    protReq.Buffer = NULL;
-    protReq.Argument = 0;
-    DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                    &protReq, sizeof(protReq), NULL, 0, &returned, NULL);
+    /* ① 剥离 PPL 保护
+     * SI_PROCESS_PROTECTION: { ProtectionType=0(None), ProtectionLevel=0(None) }
+     */
+    {
+        UCHAR protBuf[2] = { 0, 0 };
+        SI_PROCESS_INFO r = { 0 };
+        r.ProcessInformation = 4;  /* Protection */
+        r.PID = pid;
+        r.Buffer = protBuf;
+        r.Argument = 0;
+        DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                        &r, sizeof(r), NULL, 0, &returned, NULL);
+    }
 
-    /* ② 标记关键进程 */
-    SI_PROCESS_INFO critReq = { 0 };
-    critReq.ProcessInformation = 5;  /* Critical */
-    critReq.PID = pid;
-    critReq.Buffer = NULL;
-    critReq.Argument = 1;
-    DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                    &critReq, sizeof(critReq), NULL, 0, &returned, NULL);
+    /* ② 标记为关键进程 — 占位 BOOLEAN TRUE */
+    {
+        BOOLEAN critVal = TRUE;
+        SI_PROCESS_INFO r = { 0 };
+        r.ProcessInformation = 5;  /* Critical */
+        r.PID = pid;
+        r.Buffer = &critVal;
+        r.Argument = 0;
+        DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                        &r, sizeof(r), NULL, 0, &returned, NULL);
+    }
 
     /* ③ 内存级强制终止 */
     SI_PROCESS_INFO termReq = { 0 };
