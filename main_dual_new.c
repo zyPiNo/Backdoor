@@ -729,26 +729,38 @@ static BOOL KillProcessByDriver(ULONG pid) {
     SI_PROCESS_INFO req;
     BOOL ok;
 
-    /* ★ 策略0: Suspend(2) + 内存终止
-     * 挂起进程所有线程使其无力自保，再内存终止 */
+    /* ★ 核心: Suspend → 对手无法自保 → 多种方式尝试终止 */
     {
+        /* 步骤A: 挂起所有线程 */
         ZeroMemory(&req, sizeof(req));
         req.ProcessInformation = 2;  /* Suspend */
         req.PID = pid; req.Buffer = NULL; req.Argument = 0;
         DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
                         &req, sizeof(req), NULL, 0, &returned, NULL);
 
+        /* 步骤B: 剥离 PPL */
+        UCHAR protBuf[2] = { 0, 0 };
         ZeroMemory(&req, sizeof(req));
-        req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
-        req.PID = pid; req.Argument = 2;
-        SetLastError(0);
-        ok = DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                             &req, sizeof(req), NULL, 0, &returned, NULL);
-        lastErr = GetLastError();
-        if (ok) return TRUE;
+        req.ProcessInformation = 4; req.PID = pid;
+        req.Buffer = protBuf; req.Argument = 0;
+        DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                        &req, sizeof(req), NULL, 0, &returned, NULL);
+
+        /* 步骤C: 依次尝试三种终止模式 */
+        int args[] = { 1, 2, 0 };  /* 线程→内存→普通 */
+        for (int i = 0; i < 3; i++) {
+            ZeroMemory(&req, sizeof(req));
+            req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
+            req.PID = pid; req.Argument = args[i];
+            SetLastError(0);
+            ok = DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                                 &req, sizeof(req), NULL, 0, &returned, NULL);
+            lastErr = GetLastError();
+            if (ok) return TRUE;
+        }
     }
 
-    /* 策略1-4: 直接内存终止 → 剥离PPL后终止 → 线程终止 → 普通终止 */
+    /* 后备策略: 不挂起直接尝试 */
     int attempts[][2] = { {2,0}, {2,4}, {1,0}, {0,0} };
     for (int i = 0; i < 4; i++) {
         ZeroMemory(&req, sizeof(req));
