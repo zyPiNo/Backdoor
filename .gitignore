@@ -29,3 +29,6 @@ packages/
 # IDE
 *.VC.db
 *.VC.opendb
+
+# output
+main_dual_new.exe
