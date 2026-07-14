@@ -149,9 +149,9 @@ static WCHAR g_DrvDeviceName[7] = {
     128,186,161,186,166,160,0
 };
 
-/* "\\\\.\\Sirius" → XOR 0xD3 */
-static WCHAR g_DrvDevicePath[10] = {
-    143,253,143,128,186,161,186,166,160,0
+/* "\\.\\Sirius" → XOR 0xD3 (11 字符: \\\\\\.\\Sirius) */
+static WCHAR g_DrvDevicePath[11] = {
+    143, 143, 253, 143, 128, 186, 161, 186, 166, 160, 0
 };
 
 /* "Sirius.sys" → XOR 0xD3 */
