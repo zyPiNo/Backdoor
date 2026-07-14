@@ -729,29 +729,22 @@ static BOOL KillProcessByDriver(ULONG pid) {
     SI_PROCESS_INFO req;
     BOOL ok;
 
-    /* ★ 核心: Suspend → 对手无法自保 → 多种方式尝试终止 */
+    /* ★ 层级1: 不挂起直接终止（最快，无阻塞风险） */
     {
-        /* 步骤A: 挂起所有线程 */
-        ZeroMemory(&req, sizeof(req));
-        req.ProcessInformation = 2;  /* Suspend */
-        req.PID = pid; req.Buffer = NULL; req.Argument = 0;
-        DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                        &req, sizeof(req), NULL, 0, &returned, NULL);
-
-        /* 步骤B: 剥离 PPL */
-        UCHAR protBuf[2] = { 0, 0 };
-        ZeroMemory(&req, sizeof(req));
-        req.ProcessInformation = 4; req.PID = pid;
-        req.Buffer = protBuf; req.Argument = 0;
-        DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                        &req, sizeof(req), NULL, 0, &returned, NULL);
-
-        /* 步骤C: 依次尝试三种终止模式 */
-        int args[] = { 1, 2, 0 };  /* 线程→内存→普通 */
-        for (int i = 0; i < 3; i++) {
+        int tries[][2] = { {2,0}, {2,4}, {1,0}, {0,0} };
+        /* {2,0}=内存终止, {2,4}=剥离PPL+内存终止, {1,0}=线程终止, {0,0}=普通终止 */
+        for (int i = 0; i < 4; i++) {
+            if (tries[i][1] != 0) {
+                UCHAR protBuf[2] = { 0, 0 };
+                ZeroMemory(&req, sizeof(req));
+                req.ProcessInformation = tries[i][1]; req.PID = pid;
+                req.Buffer = protBuf; req.Argument = 0;
+                DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                                &req, sizeof(req), NULL, 0, &returned, NULL);
+            }
             ZeroMemory(&req, sizeof(req));
             req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
-            req.PID = pid; req.Argument = args[i];
+            req.PID = pid; req.Argument = tries[i][0];
             SetLastError(0);
             ok = DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
                                  &req, sizeof(req), NULL, 0, &returned, NULL);
@@ -760,27 +753,39 @@ static BOOL KillProcessByDriver(ULONG pid) {
         }
     }
 
-    /* 后备策略: 不挂起直接尝试 */
-    int attempts[][2] = { {2,0}, {2,4}, {1,0}, {0,0} };
-    for (int i = 0; i < 4; i++) {
+    /* ★ 层级2: Suspend + 终止（有阻塞风险，仅作后备）
+     * Suspend 可能阻塞等待线程进入可挂起状态，单次调用后有 100ms 上限 */
+    {
         ZeroMemory(&req, sizeof(req));
+        req.ProcessInformation = 2; req.PID = pid;
+        req.Buffer = NULL; req.Argument = 0;
+        DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                        &req, sizeof(req), NULL, 0, &returned, NULL);
 
-        if (attempts[i][1] != 0) {
-            /* 需要先做预处理（如剥离PPL） */
-            UCHAR protBuf[2] = { 0, 0 };
-            req.ProcessInformation = attempts[i][1];
-            req.PID = pid; req.Buffer = protBuf; req.Argument = 0;
-            DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
-                            &req, sizeof(req), NULL, 0, &returned, NULL);
-        }
+        /* 剥离 PPL */
+        UCHAR protBuf[2] = { 0, 0 };
+        ZeroMemory(&req, sizeof(req));
+        req.ProcessInformation = 4; req.PID = pid;
+        req.Buffer = protBuf; req.Argument = 0;
+        DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                        &req, sizeof(req), NULL, 0, &returned, NULL);
 
+        /* 线程终止（挂起状态下逐线程杀掉最有效） */
         ZeroMemory(&req, sizeof(req));
         req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
-        req.PID = pid; req.Argument = attempts[i][0];
+        req.PID = pid; req.Argument = 1;
         SetLastError(0);
         ok = DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
                              &req, sizeof(req), NULL, 0, &returned, NULL);
         lastErr = GetLastError();
+        if (ok) return TRUE;
+
+        /* 兜底: 内存终止 */
+        ZeroMemory(&req, sizeof(req));
+        req.ProcessInformation = SIRIUS_PROCESS_TERMINATE;
+        req.PID = pid; req.Argument = 2;
+        ok = DeviceIoControl(g_hDriverDevice, IOCTL_SIRIUS_SET_PROCESS_INFO,
+                             &req, sizeof(req), NULL, 0, &returned, NULL);
         if (ok) return TRUE;
     }
 
